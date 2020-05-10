@@ -1,9 +1,13 @@
+use crate::error::XenonError;
 use crate::session::Capabilities;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
     name: String,
+    version: String,
+    os: String,
     driver_path: PathBuf,
     max_sessions: u32,
 }
@@ -18,11 +22,12 @@ impl BrowserConfig {
     }
 
     pub fn matches_capabilities(&self, capabilities: &Capabilities) -> bool {
+        // TODO: implement browser name/version/os matching.
         true
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
 pub struct XenonConfig {
     browsers: Vec<BrowserConfig>,
 }
@@ -40,4 +45,17 @@ impl XenonConfig {
         }
         None
     }
+}
+
+pub fn load_config(filename: &str) -> Result<XenonConfig, XenonError> {
+    let config_path = Path::new(filename);
+    if !config_path.exists() {
+        return Err(XenonError::ConfigNotFound(filename.to_string()));
+    }
+
+    let config_str = std::fs::read_to_string(config_path)
+        .map_err(|e| XenonError::ConfigLoadError(filename.to_string(), e.to_string()))?;
+    let config = serde_yaml::from_str(&config_str)
+        .map_err(|e| XenonError::ConfigLoadError(filename.to_string(), e.to_string()))?;
+    Ok(config)
 }

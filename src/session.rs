@@ -2,6 +2,7 @@ use crate::config::BrowserConfig;
 use crate::error::XenonError;
 use hyper::client::HttpConnector;
 use hyper::{Body, Client, Method, Request, Response};
+use serde::export::Formatter;
 use serde::{Deserialize, Serialize};
 use std::process::{Child, Command};
 
@@ -20,6 +21,12 @@ where
 impl Default for XenonSessionId {
     fn default() -> Self {
         Self(uuid::Uuid::new_v4().to_string())
+    }
+}
+
+impl std::fmt::Display for XenonSessionId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
