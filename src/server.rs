@@ -107,7 +107,7 @@ async fn handle_session(
         0 => unreachable!(),
         1 => match req.method() {
             &hyper::Method::POST => handle_create_session(req, state).await,
-            e => Err(XenonError::RespondWith(XenonResponse::MethodNotFound(
+            _ => Err(XenonError::RespondWith(XenonResponse::MethodNotFound(
                 path_elements.join("/"),
             ))),
         },
@@ -139,7 +139,7 @@ pub async fn handle_create_session(
     // TODO: use read lock here and then use write lock later once session created.
     let s = state.write().await;
     match s.config.match_capabilities(&capabilities) {
-        Some(browser) => {
+        Some(_browser) => {
             // TODO: Create session.
             Ok(Response::new(Body::from("TEST")))
         }
@@ -149,7 +149,7 @@ pub async fn handle_create_session(
     }
 }
 
-pub async fn handle_delete_session(
+pub async fn _handle_delete_session(
     req: Request<Body>,
     state: Arc<RwLock<XenonState>>,
     session_id: &XenonSessionId,

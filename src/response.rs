@@ -1,4 +1,3 @@
-use crate::session::XenonSessionId;
 use hyper::{Body, StatusCode};
 use serde::Serialize;
 

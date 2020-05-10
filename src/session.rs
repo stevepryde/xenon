@@ -1,9 +1,9 @@
 use crate::config::BrowserConfig;
 use crate::error::XenonError;
 use hyper::client::HttpConnector;
-use hyper::{Body, Client, Method, Request, Response};
+use hyper::{Body, Client, Request, Response};
 use serde::export::Formatter;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::process::{Child, Command};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
