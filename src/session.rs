@@ -1,9 +1,13 @@
-use crate::config::BrowserConfig;
-use crate::error::XenonError;
+use crate::error::{XenonError, XenonResult};
+use crate::portmanager::ServicePort;
+use crate::response::XenonResponse;
+use chrono::{DateTime, Local};
 use hyper::client::HttpConnector;
+use hyper::http::uri::Authority;
 use hyper::{Body, Client, Request, Response};
 use serde::export::Formatter;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::process::{Child, Command};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -36,47 +40,59 @@ impl XenonSessionId {
     }
 }
 
+/// A Session represents one browser session with one webdriver.
+/// Note that a single webdriver such as chromedriver can have multiple
+/// sessions and parallel requests, so the Http client needs to go here
+/// in the session and not on the service. This allows multiple Xenon clients
+/// to make requests to the same webdriver concurrently if needed.
 #[derive(Debug)]
 pub struct Session {
-    browser: BrowserConfig,
     // NOTE: This is the internal session id for the target WebDriver session itself.
-    session_id: String,
-    port: u16,
-    process: Child,
+    // It starts out as None since it is just a placeholder for a session.
+    // This will be updated once the session actually connects.
+    session_id: Option<String>,
+    port: ServicePort,
     client: Client<HttpConnector, Body>,
+    // Timestamp of last request, for handling timeouts.
+    last_timestamp: DateTime<Local>,
 }
 
 impl Session {
-    pub fn start(browser: BrowserConfig, port: u16) -> Result<Self, std::io::Error> {
-        // TODO: May need to abstract this to support drivers other than chromedriver/geckodriver.
-        let child_process = Command::new(browser.driver_path())
-            .arg("--port")
-            .arg(port.to_string())
-            .spawn()?;
-        Ok(Self {
-            browser,
-            session_id: String::new(),
+    pub fn new(port: ServicePort) -> Self {
+        Self {
+            session_id: None,
             port,
-            process: child_process,
             client: Client::new(),
-        })
+            last_timestamp: Local::now(),
+        }
     }
 
-    pub async fn handle_request(
+    pub fn session_id(&self) -> XenonResult<&str> {
+        match &self.session_id {
+            Some(x) => Ok(&x),
+            None => Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
+                "Missing session id (not started?)".to_string(),
+            ))),
+        }
+    }
+
+    pub async fn forward_request(
         &self,
         req: Request<Body>,
-        uri: &str,
-    ) -> Result<Response<Body>, XenonError> {
+        endpoint: &str,
+    ) -> XenonResult<Response<Body>> {
         // Substitute the uri and send the request again...
-        let mut path_and_query = format!("/session/{}/{}", self.session_id, uri);
+        let mut path_and_query = format!("/session/{}/{}", self.session_id()?, endpoint);
         if let Some(q) = req.uri().query() {
             path_and_query += "?";
             path_and_query += q;
         }
 
+        let host = format!("localhost:{}", self.port);
+        let authority: Authority = host.parse().unwrap();
         let uri_out = hyper::Uri::builder()
             .scheme("http")
-            .authority("localhost")
+            .authority(authority)
             .path_and_query(path_and_query.as_str())
             .build()
             .map_err(|e| XenonError::RequestError(e.to_string()))?;
@@ -91,18 +107,4 @@ impl Session {
             .await
             .map_err(|e| XenonError::RequestError(e.to_string()))
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserMatch {
-    browser_name: String,
-    browser_version: String,
-    platform_name: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Capabilities {
-    always_match: BrowserMatch,
 }

@@ -8,6 +8,8 @@ pub enum XenonResponse {
     MethodNotFound(String),
     SessionNotFound(String),
     ErrorCreatingSession(String),
+    NoMatchingBrowser,
+    NoSessionsAvailable,
     InternalServerError(String),
 }
 
@@ -16,6 +18,9 @@ impl XenonResponse {
         match self {
             XenonResponse::PathNotFound(_) | XenonResponse::MethodNotFound(_) => {
                 StatusCode::BAD_REQUEST
+            }
+            XenonResponse::NoMatchingBrowser | XenonResponse::NoSessionsAvailable => {
+                StatusCode::NOT_FOUND
             }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }

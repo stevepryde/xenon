@@ -17,4 +17,8 @@ pub enum XenonError {
     ConfigLoadError(String, String),
     #[error("Error response returned to client")]
     RespondWith(XenonResponse),
+    #[error("IO Error: {0}")]
+    IOError(#[from] std::io::Error),
+    #[error("No sessions available for this service")]
+    NoSessionsAvailable,
 }

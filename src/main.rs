@@ -1,9 +1,12 @@
 use crate::server::start_server;
 
+mod browser;
 mod config;
 mod error;
+mod portmanager;
 mod response;
 mod server;
+mod service;
 mod session;
 mod state;
 

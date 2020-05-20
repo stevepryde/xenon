@@ -1,7 +1,8 @@
+use crate::browser::Capabilities;
 use crate::config::{load_config, XenonConfig};
 use crate::error::{XenonError, XenonResult};
 use crate::response::XenonResponse;
-use crate::session::{Capabilities, XenonSessionId};
+use crate::session::{Session, XenonSessionId};
 use crate::state::XenonState;
 use bytes::buf::ext::BufExt;
 use hyper::service::{make_service_fn, service_fn};
@@ -29,7 +30,10 @@ pub async fn start_server() -> XenonResult<()> {
         // Use default config.
         XenonConfig::new()
     });
+    debug!("Config loaded:\n{:#?}", config);
     let state = Arc::new(RwLock::new(XenonState::new(config)));
+
+    // TODO: Start timer for performing cleanup / session timeout.
 
     // And a MakeService to handle each connection...
     let make_service = make_service_fn(move |_conn| {
@@ -116,12 +120,21 @@ async fn handle_session(
             let remaining_path: String = path_elements[2..].join("/");
 
             // Forward to session.
-            match state.read().await.get_session(&session_id) {
-                Some(session) => session.handle_request(req, &remaining_path).await,
-                None => Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
-                    session_id.to_string(),
-                ))),
-            }
+            let s = state.read().await;
+            let rwlock_session = match s.get_session(&session_id) {
+                Some(x) => x,
+                None => {
+                    return Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
+                        session_id.to_string(),
+                    )))
+                }
+            };
+
+            let session = rwlock_session.read().await;
+            let response = session.forward_request(req, &remaining_path).await?;
+            // TODO: handle session deletion here.
+
+            Ok(response)
         }
     }
 }
@@ -136,27 +149,42 @@ pub async fn handle_create_session(
     let capabilities: Capabilities = serde_json::from_reader(whole_body.reader())
         .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
 
-    // TODO: use read lock here and then use write lock later once session created.
-    let s = state.write().await;
-    match s.config.match_capabilities(&capabilities) {
-        Some(_browser) => {
-            // TODO: Create session.
-            Ok(Response::new(Body::from("TEST")))
-        }
-        None => Err(XenonError::RespondWith(
-            XenonResponse::ErrorCreatingSession("No browser matching capabilities".to_string()),
-        )),
-    }
-}
-
-pub async fn _handle_delete_session(
-    req: Request<Body>,
-    state: Arc<RwLock<XenonState>>,
-    session_id: &XenonSessionId,
-) -> XenonResult<Response<Body>> {
-    let res = {
+    let group_name = {
         let s = state.read().await;
-        let session = match s.get_session(&session_id) {
+        let group = match s.match_capabilities(&capabilities) {
+            Some(x) => x,
+            None => {
+                return Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser));
+            }
+        };
+
+        // Found a service group. Do we have capacity for a new session?
+        // Note that this is a preliminary check only and is not a guarantee.
+        // We use this to return early if there are no sessions available,
+        // but even if this suggests we have capacity we still need to
+        // check again while holding a write lock on service_groups.
+        if !group.has_capacity() {
+            return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
+        }
+
+        group.name().to_string()
+    };
+
+    let session_id = {
+        let mut s = state.write().await;
+        let rwlock_port_manager = s.port_manager();
+        let mut port_manager = rwlock_port_manager.write().await;
+        let group = match s.service_group_mut(&group_name) {
+            Some(g) => g,
+            None => unreachable!(),
+        };
+        group.spawn_session(&mut port_manager)?
+    };
+
+    // Perform the request.
+    let result = {
+        let s = state.read().await;
+        let rwlock_session = match s.get_session(&session_id) {
             Some(x) => x,
             None => {
                 return Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
@@ -164,14 +192,47 @@ pub async fn _handle_delete_session(
                 )))
             }
         };
+        let session = rwlock_session.read().await;
+        // TODO: create new session using the body above.
 
-        session.handle_request(req, "").await?
+        Ok(Response::new(Body::from("Hello")))
     };
-    if !state.write().await.delete_session(session_id) {
-        Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
-            session_id.to_string(),
-        )))
-    } else {
-        Ok(res)
+
+    let mut s = state.write().await;
+    match result {
+        Ok(response) => {
+            // Update session.
+            Ok(response)
+        }
+        Err(e) => {
+            s.delete_session_index(&session_id);
+            Err(e)
+        }
     }
+
+    // NOTES:
+
+    // NEW APPROACH:
+    // Maintain a IndexMap of ServiceGroups (key = name).
+    // Each ServiceGroup contains a hashmap of services (key = port).
+    // Each service contains a hashmap of sessions (key = XenonSessionId).
+    // State also maintains an index (hashmap) of XenonSessionId to ServiceGroup (name) and service (port).
+    // You can find a session by first consulting the hashmap in state, then
+    // lookup the ServiceGroup by name, and lookup the service by port, then lookup the service by id.
+
+    // New session:
+    // Lock-read each ServiceGroup until we find a match on capabilities.
+    // Lock-write Service Group
+    // Lock-write services
+    // find service with fewest sessions.
+    // if no session slots available, spawn new service
+    // lock sessions for service
+    // add placeholder session to service - create new XenonSessionId here.
+    // Unlock services, service group
+    // Perform new session request
+    // - Response for this will have the internal session id if success
+    // Lock service group, service, sessions
+    // If ok, update session
+    // Otherwise remove session (and clean up service if applicable)
+    // Return response
 }
