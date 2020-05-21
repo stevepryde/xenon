@@ -1,3 +1,4 @@
+use crate::browser::Capabilities;
 use crate::error::{XenonError, XenonResult};
 use crate::portmanager::ServicePort;
 use crate::response::XenonResponse;
@@ -6,8 +7,9 @@ use hyper::client::HttpConnector;
 use hyper::http::uri::Authority;
 use hyper::{Body, Client, Request, Response};
 use serde::export::Formatter;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::process::{Child, Command};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -28,16 +30,31 @@ impl Default for XenonSessionId {
     }
 }
 
-impl std::fmt::Display for XenonSessionId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 impl XenonSessionId {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+impl ToString for XenonSessionId {
+    fn to_string(&self) -> String {
+        self.0.clone()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ConnectionData {
+    #[serde(default, rename(deserialize = "sessionId"))]
+    session_id: String,
+    #[serde(default)]
+    capabilities: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ConnectionResp {
+    #[serde(default)]
+    session_id: String,
+    value: ConnectionData,
 }
 
 /// A Session represents one browser session with one webdriver.
@@ -50,7 +67,7 @@ pub struct Session {
     // NOTE: This is the internal session id for the target WebDriver session itself.
     // It starts out as None since it is just a placeholder for a session.
     // This will be updated once the session actually connects.
-    session_id: Option<String>,
+    session_id: String,
     port: ServicePort,
     client: Client<HttpConnector, Body>,
     // Timestamp of last request, for handling timeouts.
@@ -58,22 +75,90 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(port: ServicePort) -> Self {
-        Self {
-            session_id: None,
-            port,
-            client: Client::new(),
-            last_timestamp: Local::now(),
+    pub async fn create(
+        port: ServicePort,
+        capabilities: &Capabilities,
+        xsession_id: XenonSessionId,
+    ) -> XenonResult<(Self, Response<Body>)> {
+        let client = Client::new();
+
+        let host = format!("localhost:{}", port);
+        let body_str = serde_json::to_string(&capabilities).map_err(|e| {
+            XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+        })?;
+        let req_out =
+            Session::build_request(hyper::Method::POST, &host, "session", Body::from(body_str))?;
+        let mut response = client
+            .request(req_out)
+            .await
+            .map_err(|e| XenonError::RequestError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(XenonError::ResponsePassThrough(response));
         }
+
+        let body_bytes = hyper::body::to_bytes(response.body_mut())
+            .await
+            .map_err(|e| {
+                XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+            })?;
+
+        // Deserialize the response into something WebDriver clients will understand.
+        let mut resp: ConnectionResp = serde_json::from_slice(&body_bytes).map_err(|e| {
+            XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+        })?;
+
+        let session_id = if resp.session_id.is_empty() {
+            resp.value.session_id
+        } else {
+            resp.session_id
+        };
+
+        // Switch out the session ids in the response with the one from Xenon.
+        resp.session_id = xsession_id.to_string();
+        resp.value.session_id = xsession_id.to_string();
+
+        let bytes_out = serde_json::to_vec(&resp).map_err(|e| {
+            XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+        })?;
+        let resp_out = Response::builder()
+            .status(response.status())
+            .body(Body::from(bytes_out))
+            .map_err(|e| {
+                XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+            })?;
+
+        Ok((
+            Self {
+                session_id,
+                port,
+                client,
+                last_timestamp: Local::now(),
+            },
+            resp_out,
+        ))
     }
 
-    pub fn session_id(&self) -> XenonResult<&str> {
-        match &self.session_id {
-            Some(x) => Ok(&x),
-            None => Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
-                "Missing session id (not started?)".to_string(),
-            ))),
-        }
+    pub fn build_request(
+        method: hyper::Method,
+        host: &str,
+        path: &str,
+        body: Body,
+    ) -> XenonResult<Request<Body>> {
+        let authority: Authority = host.parse().unwrap();
+        let uri_out = hyper::Uri::builder()
+            .scheme("http")
+            .authority(authority)
+            .path_and_query(path)
+            .build()
+            .map_err(|e| XenonError::RequestError(e.to_string()))?;
+
+        let req_out = Request::builder()
+            .method(method)
+            .uri(uri_out)
+            .body(body)
+            .map_err(|e| XenonError::RequestError(e.to_string()))?;
+        Ok(req_out)
     }
 
     pub async fn forward_request(
@@ -82,26 +167,18 @@ impl Session {
         endpoint: &str,
     ) -> XenonResult<Response<Body>> {
         // Substitute the uri and send the request again...
-        let mut path_and_query = format!("/session/{}/{}", self.session_id()?, endpoint);
+        let mut path_and_query = format!("/session/{}/{}", self.session_id, endpoint);
         if let Some(q) = req.uri().query() {
             path_and_query += "?";
             path_and_query += q;
         }
-
         let host = format!("localhost:{}", self.port);
-        let authority: Authority = host.parse().unwrap();
-        let uri_out = hyper::Uri::builder()
-            .scheme("http")
-            .authority(authority)
-            .path_and_query(path_and_query.as_str())
-            .build()
-            .map_err(|e| XenonError::RequestError(e.to_string()))?;
-
-        let req_out = Request::builder()
-            .method(req.method())
-            .uri(uri_out)
-            .body(req.into_body())
-            .map_err(|e| XenonError::RequestError(e.to_string()))?;
+        let req_out = Session::build_request(
+            req.method().clone(),
+            &host,
+            &path_and_query,
+            req.into_body(),
+        )?;
         self.client
             .request(req_out)
             .await

@@ -1,4 +1,5 @@
 use crate::response::XenonResponse;
+use hyper::{Body, Response};
 use thiserror::Error;
 
 pub type XenonResult<T> = Result<T, XenonError>;
@@ -17,6 +18,8 @@ pub enum XenonError {
     ConfigLoadError(String, String),
     #[error("Error response returned to client")]
     RespondWith(XenonResponse),
+    #[error("WebDriver response passed through to client")]
+    ResponsePassThrough(Response<Body>),
     #[error("IO Error: {0}")]
     IOError(#[from] std::io::Error),
     #[error("No sessions available for this service")]

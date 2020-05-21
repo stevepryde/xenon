@@ -109,8 +109,8 @@ async fn handle_session(
 
     match path_elements.len() {
         0 => unreachable!(),
-        1 => match req.method() {
-            &hyper::Method::POST => handle_create_session(req, state).await,
+        1 => match *req.method() {
+            hyper::Method::POST => handle_create_session(req, state).await,
             _ => Err(XenonError::RespondWith(XenonResponse::MethodNotFound(
                 path_elements.join("/"),
             ))),
@@ -120,17 +120,19 @@ async fn handle_session(
             let remaining_path: String = path_elements[2..].join("/");
 
             // Forward to session.
-            let s = state.read().await;
-            let rwlock_session = match s.get_session(&session_id) {
-                Some(x) => x,
-                None => {
-                    return Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
-                        session_id.to_string(),
-                    )))
+            let mutex_session = {
+                let s = state.read().await;
+                match s.get_session(&session_id) {
+                    Some(x) => x,
+                    None => {
+                        return Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
+                            session_id.to_string(),
+                        )))
+                    }
                 }
             };
 
-            let session = rwlock_session.read().await;
+            let session = mutex_session.lock().await;
             let response = session.forward_request(req, &remaining_path).await?;
             // TODO: handle session deletion here.
 
@@ -149,90 +151,77 @@ pub async fn handle_create_session(
     let capabilities: Capabilities = serde_json::from_reader(whole_body.reader())
         .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
 
-    let group_name = {
+    let (xsession_id, port) = {
         let s = state.read().await;
-        let group = match s.match_capabilities(&capabilities) {
-            Some(x) => x,
+        let rwlock_groups = s.service_groups();
+
+        // We can do the capability matching under a read lock.
+        let group_name = {
+            let groups = rwlock_groups.read().await;
+
+            let group = match groups
+                .values()
+                .find(|v| v.matches_capabilities(&capabilities))
+            {
+                Some(x) => x,
+                None => {
+                    return Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser));
+                }
+            };
+
+            // Found a service group. Do we have capacity for a new session?
+            // Note that this is a preliminary check only and is not a guarantee.
+            // We use this to return early if there are no sessions available,
+            // but even if this suggests we have capacity we still need to
+            // check again while holding a write lock on service_groups.
+            if !group.has_capacity() {
+                return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
+            }
+
+            group.name().to_string()
+        };
+
+        // Now we get a write lock to add the new session/service.
+        let rwlock_port_manager = s.port_manager();
+        let (mut port_manager, mut groups) =
+            tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
+
+        let group = match groups.get_mut(&group_name) {
+            Some(g) => g,
             None => {
                 return Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser));
             }
         };
 
-        // Found a service group. Do we have capacity for a new session?
-        // Note that this is a preliminary check only and is not a guarantee.
-        // We use this to return early if there are no sessions available,
-        // but even if this suggests we have capacity we still need to
-        // check again while holding a write lock on service_groups.
-        if !group.has_capacity() {
-            return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
+        // This only holds a write lock on the port manager and service groups,
+        // so it only blocks the creation or deletion of other services or sessions.
+        // This will not block any in-progress sessions.
+        let service = group.get_or_start_service(&mut port_manager)?;
+        let xsession_id = XenonSessionId::new();
+        service.add_session(xsession_id.clone());
+        (xsession_id, service.port())
+    };
+
+    // Create the session. No locks are held at all here.
+    match Session::create(port, &capabilities, xsession_id.clone()).await {
+        Ok((session, response)) => {
+            // Add session to pool.
+            let mut s = state.write().await;
+            s.add_session(xsession_id, session);
+            // Forward the response back to the client.
+            Ok(response)
         }
-
-        group.name().to_string()
-    };
-
-    let session_id = {
-        let mut s = state.write().await;
-        let rwlock_port_manager = s.port_manager();
-        let mut port_manager = rwlock_port_manager.write().await;
-        let group = match s.service_group_mut(&group_name) {
-            Some(g) => g,
-            None => unreachable!(),
-        };
-        group.spawn_session(&mut port_manager)?
-    };
-
-    // Perform the request.
-    let result = {
-        let s = state.read().await;
-        let rwlock_session = match s.get_session(&session_id) {
-            Some(x) => x,
-            None => {
-                return Err(XenonError::RespondWith(XenonResponse::SessionNotFound(
-                    session_id.to_string(),
-                )))
-            }
-        };
-        let session = rwlock_session.read().await;
-        // TODO: create new session using the body above.
-
-        Ok(Response::new(Body::from("Hello")))
-    };
-
-    let mut s = state.write().await;
-    match result {
-        Ok(response) => {
-            // Update session.
+        Err(XenonError::ResponsePassThrough(response)) => {
+            // Delete session from service.
+            let s = state.read().await;
+            let rwlock_groups = s.service_groups();
+            // TODO: need to store the group name/port with the session.
             Ok(response)
         }
         Err(e) => {
-            s.delete_session_index(&session_id);
+            // Delete session from service.
+
             Err(e)
         }
     }
-
-    // NOTES:
-
-    // NEW APPROACH:
-    // Maintain a IndexMap of ServiceGroups (key = name).
-    // Each ServiceGroup contains a hashmap of services (key = port).
-    // Each service contains a hashmap of sessions (key = XenonSessionId).
-    // State also maintains an index (hashmap) of XenonSessionId to ServiceGroup (name) and service (port).
-    // You can find a session by first consulting the hashmap in state, then
-    // lookup the ServiceGroup by name, and lookup the service by port, then lookup the service by id.
-
-    // New session:
-    // Lock-read each ServiceGroup until we find a match on capabilities.
-    // Lock-write Service Group
-    // Lock-write services
-    // find service with fewest sessions.
-    // if no session slots available, spawn new service
-    // lock sessions for service
-    // add placeholder session to service - create new XenonSessionId here.
-    // Unlock services, service group
-    // Perform new session request
-    // - Response for this will have the internal session id if success
-    // Lock service group, service, sessions
-    // If ok, update session
-    // Otherwise remove session (and clean up service if applicable)
-    // Return response
 }

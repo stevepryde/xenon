@@ -3,7 +3,7 @@ use crate::error::{XenonError, XenonResult};
 use crate::portmanager::{PortManager, ServicePort};
 use crate::response::XenonResponse;
 use crate::session::{Session, XenonSessionId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::{Child, Command};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 pub struct WebDriverService {
     port: ServicePort,
     process: Child,
-    sessions: HashMap<XenonSessionId, Arc<RwLock<Session>>>,
+    sessions: HashSet<XenonSessionId>,
 }
 
 impl WebDriverService {
@@ -28,21 +28,28 @@ impl WebDriverService {
         Ok(Self {
             port,
             process,
-            sessions: HashMap::new(),
+            sessions: HashSet::new(),
         })
+    }
+
+    pub fn port(&self) -> ServicePort {
+        self.port
     }
 
     pub fn num_active_sessions(&self) -> usize {
         self.sessions.len()
     }
 
-    pub fn add_session(&mut self, session_id: XenonSessionId, session: Session) {
-        self.sessions
-            .insert(session_id, Arc::new(RwLock::new(session)));
+    pub fn add_session(&mut self, session_id: XenonSessionId) {
+        self.sessions.insert(session_id);
     }
 
-    pub fn get_session(&self, session_id: &XenonSessionId) -> Option<Arc<RwLock<Session>>> {
-        self.sessions.get(session_id).cloned()
+    pub fn has_session(&self, session_id: &XenonSessionId) -> bool {
+        self.sessions.contains(session_id)
+    }
+
+    pub fn delete_session(&mut self, session_id: &XenonSessionId) {
+        self.sessions.remove(session_id);
     }
 }
 
@@ -92,7 +99,7 @@ impl ServiceGroup {
         self.services.get(&port)
     }
 
-    fn get_next_available_service(
+    pub fn get_or_start_service(
         &mut self,
         port_manager: &mut PortManager,
     ) -> XenonResult<&mut WebDriverService> {
@@ -135,24 +142,5 @@ impl ServiceGroup {
             .services
             .get_mut(&next_port)
             .expect(&format!("No service for port '{}'", next_port)))
-    }
-
-    pub fn spawn_session(&mut self, port_manager: &mut PortManager) -> XenonResult<XenonSessionId> {
-        let service = self.get_next_available_service(port_manager)?;
-        let xsession_id = XenonSessionId::new();
-        let session_placeholder = Session::new(service.port);
-        service.add_session(xsession_id.clone(), session_placeholder);
-
-        // LOCK services
-        // > Sort services by most available slots to fewest available slots
-        // > Take first. If no slots available, spawn new.
-        // > Lock session slot by inserting a dummy session.
-        // UNLOCK services
-        // Perform new session request.
-        // LOCK sessions
-        // If ok, update dummy session with real details and return it.
-        // If not ok, clear dummy session and return error.
-        // UNLOCK sessions
-        Ok(xsession_id)
     }
 }
