@@ -85,7 +85,8 @@ async fn handle(
     // Routing for top-level path.
     let result = match top_level_path {
         x if x.is_empty() => Ok(Response::new(Body::from("TODO: show status page"))),
-        "session" => handle_session(req, state).await,
+        "session" => handle_session(req, state, false).await,
+        "wd" => handle_session(req, state, true).await,
         p => Err(XenonError::RespondWith(XenonResponse::PathNotFound(
             p.to_string(),
         ))),
@@ -124,8 +125,19 @@ async fn handle(
 async fn handle_session(
     req: Request<Body>,
     state: Arc<RwLock<XenonState>>,
+    selenium_compatibility: bool,
 ) -> XenonResult<Response<Body>> {
-    let path_elements: Vec<&str> = req.uri().path().trim_matches('/').split('/').collect();
+    let mut path_elements: Vec<&str> = req.uri().path().trim_matches('/').split('/').collect();
+
+    // We can mimic selenium by ignoring the path /wd/hub if it exists.
+    if selenium_compatibility
+        && path_elements.len() > 2
+        && path_elements[0] == "wd"
+        && path_elements[1] == "hub"
+    {
+        // Selenium endpoint. Just remove these from the path.
+        path_elements = path_elements.split_off(2);
+    }
 
     match path_elements.len() {
         0 => unreachable!(),
