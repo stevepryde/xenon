@@ -6,11 +6,8 @@ use chrono::{DateTime, Local};
 use hyper::client::HttpConnector;
 use hyper::http::uri::Authority;
 use hyper::{Body, Client, Request, Response};
-use serde::export::Formatter;
+use log::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::process::{Child, Command};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct XenonSessionId(String);
@@ -68,6 +65,7 @@ pub struct Session {
     // It starts out as None since it is just a placeholder for a session.
     // This will be updated once the session actually connects.
     session_id: String,
+    service_group: String,
     port: ServicePort,
     client: Client<HttpConnector, Body>,
     // Timestamp of last request, for handling timeouts.
@@ -77,22 +75,47 @@ pub struct Session {
 impl Session {
     pub async fn create(
         port: ServicePort,
+        service_group: &str,
         capabilities: &Capabilities,
         xsession_id: XenonSessionId,
     ) -> XenonResult<(Self, Response<Body>)> {
         let client = Client::new();
 
+        // Wait for port to be ready.
         let host = format!("localhost:{}", port);
-        let body_str = serde_json::to_string(&capabilities).map_err(|e| {
+        loop {
+            let status_req =
+                Session::build_request(hyper::Method::GET, &host, "/status", Body::empty())?;
+            match client.request(status_req).await {
+                Ok(response) => {
+                    debug!("STATUS is {:?}", response);
+                    break;
+                }
+                Err(e) => {
+                    debug!("STATUS ERROR: {:?}", e);
+                }
+            }
+        }
+
+        // Send empty capabilities request to the WebDriver because we already
+        // handled the capabilities matching internally.
+        let caps = serde_json::json!({
+            "capabilities": {
+                "firstMatch": [{}], "alwaysMatch": {}
+            }
+        });
+        let body_str = serde_json::to_string(&caps).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
         })?;
         let req_out =
-            Session::build_request(hyper::Method::POST, &host, "session", Body::from(body_str))?;
+            Session::build_request(hyper::Method::POST, &host, "/session", Body::from(body_str))?;
+
+        debug!("WebDriver request: {:?}", req_out);
         let mut response = client
             .request(req_out)
             .await
             .map_err(|e| XenonError::RequestError(e.to_string()))?;
-
+        debug!("WebDriver returned {:?}", response);
         if !response.status().is_success() {
             return Err(XenonError::ResponsePassThrough(response));
         }
@@ -121,6 +144,7 @@ impl Session {
         let bytes_out = serde_json::to_vec(&resp).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
         })?;
+        debug!("Sending response: {:?}", bytes_out);
         let resp_out = Response::builder()
             .status(response.status())
             .body(Body::from(bytes_out))
@@ -132,11 +156,20 @@ impl Session {
             Self {
                 session_id,
                 port,
+                service_group: service_group.to_string(),
                 client,
                 last_timestamp: Local::now(),
             },
             resp_out,
         ))
+    }
+
+    pub fn port(&self) -> ServicePort {
+        self.port
+    }
+
+    pub fn service_group(&self) -> &str {
+        &self.service_group
     }
 
     pub fn build_request(

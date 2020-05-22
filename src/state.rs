@@ -1,10 +1,8 @@
-use crate::browser::Capabilities;
 use crate::config::XenonConfig;
-use crate::portmanager::{PortManager, ServicePort};
+use crate::portmanager::PortManager;
 use crate::service::{ServiceGroup, ServiceGroupName};
 use crate::session::{Session, XenonSessionId};
 use indexmap::map::IndexMap;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};

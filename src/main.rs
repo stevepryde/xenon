@@ -1,4 +1,5 @@
 use crate::server::start_server;
+use env_logger::Env;
 
 mod browser;
 mod config;
@@ -12,10 +13,10 @@ mod state;
 
 #[tokio::main]
 async fn main() {
-    pretty_env_logger::init();
+    env_logger::from_env(Env::default().default_filter_or("xenon=debug")).init();
 
     if let Err(e) = start_server().await {
-        println!("Xenon server stopped.\nERROR: {}", e);
+        println!("Xenon server stopped.\nERROR: {:?}", e);
         std::process::exit(1);
     }
 }

@@ -2,12 +2,11 @@ use crate::browser::{BrowserConfig, Capabilities};
 use crate::error::{XenonError, XenonResult};
 use crate::portmanager::{PortManager, ServicePort};
 use crate::response::XenonResponse;
-use crate::session::{Session, XenonSessionId};
+use crate::session::XenonSessionId;
+use log::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::{Child, Command};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// A WebDriverService represents one instance of a webdriver binary such
 /// as chromedriver, to which one or more sessions can attach.
@@ -20,10 +19,8 @@ pub struct WebDriverService {
 
 impl WebDriverService {
     pub fn spawn(port: ServicePort, path: &Path) -> XenonResult<Self> {
-        let process = Command::new(path)
-            .arg("--port")
-            .arg(port.to_string())
-            .spawn()?;
+        debug!("Spawning new webdriver on port {}: {:?}", port, path);
+        let process = Command::new(path).arg(format!("--port={}", port)).spawn()?;
 
         Ok(Self {
             port,
@@ -42,10 +39,6 @@ impl WebDriverService {
 
     pub fn add_session(&mut self, session_id: XenonSessionId) {
         self.sessions.insert(session_id);
-    }
-
-    pub fn has_session(&self, session_id: &XenonSessionId) -> bool {
-        self.sessions.contains(session_id)
     }
 
     pub fn delete_session(&mut self, session_id: &XenonSessionId) {
@@ -95,8 +88,8 @@ impl ServiceGroup {
         self.total_sessions() < max_sessions
     }
 
-    pub fn get_service(&self, port: &ServicePort) -> Option<&WebDriverService> {
-        self.services.get(&port)
+    pub fn get_service_mut(&mut self, port: &ServicePort) -> Option<&mut WebDriverService> {
+        self.services.get_mut(&port)
     }
 
     pub fn get_or_start_service(
@@ -121,7 +114,10 @@ impl ServiceGroup {
         }
 
         let next_port = match next_port {
-            Some(x) => x,
+            Some(x) => {
+                debug!("Matched existing service on port: {}", x);
+                x
+            }
             None => {
                 // Spawn new service.
                 let newport = match port_manager.lock_next_port() {
@@ -141,6 +137,6 @@ impl ServiceGroup {
         Ok(self
             .services
             .get_mut(&next_port)
-            .expect(&format!("No service for port '{}'", next_port)))
+            .unwrap_or_else(|| panic!("No service for port '{}'", next_port)))
     }
 }

@@ -9,6 +9,10 @@ pub fn default_max_sessions() -> u32 {
     5
 }
 
+// TODO: Add flag for always having 1 service running. Maybe min_capacity?
+//       This will boost performance where we need a minimum number of
+//       WebDriver sessions available at any time.
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
     name: String,
@@ -70,4 +74,9 @@ impl Capabilities {
     pub fn platform_name(&self) -> &Option<String> {
         &self.always_match.platform_name
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct W3CCapabilities {
+    pub capabilities: Capabilities,
 }

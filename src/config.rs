@@ -3,7 +3,7 @@ use crate::error::XenonError;
 use crate::portmanager::ServicePort;
 use log::*;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct XenonConfig {
@@ -19,8 +19,19 @@ impl XenonConfig {
 
     /// Get the port list as a Vec of individual ports.
     pub fn get_port_list(&self) -> Vec<ServicePort> {
-        // TODO: warn if number of sessions > number of ports.
-        parse_port_list(&self.ports)
+        let port_list = parse_port_list(&self.ports);
+        let max_sessions =
+            self.browsers
+                .iter()
+                .fold(0, |acc, browser| acc + browser.max_sessions()) as usize;
+        if port_list.len() < max_sessions {
+            warn!(
+                "Number of ports ({}) is less than the maximum number of sessions ({})",
+                port_list.len(),
+                max_sessions
+            );
+        }
+        port_list
     }
 
     /// Get the list of browsers and consume the config.
