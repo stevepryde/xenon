@@ -1,10 +1,9 @@
-use crate::browser::{Capabilities, W3CCapabilities};
+use crate::browser::W3CCapabilities;
 use crate::config::{load_config, XenonConfig};
 use crate::error::{XenonError, XenonResult};
 use crate::response::XenonResponse;
 use crate::session::{Session, XenonSessionId};
 use crate::state::XenonState;
-use bytes::buf::ext::BufExt;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use log::*;
@@ -12,6 +11,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::time::{delay_for, Duration};
 
 pub async fn start_server() -> XenonResult<()> {
     let port: i32 = std::option_env!("XENON_PORT")
@@ -33,7 +33,13 @@ pub async fn start_server() -> XenonResult<()> {
     debug!("Config loaded:\n{:#?}", config);
     let state = Arc::new(RwLock::new(XenonState::new(config)));
 
-    // TODO: Start timer for performing cleanup / session timeout.
+    let (tx_terminator, rx_terminator) = tokio::sync::oneshot::channel();
+
+    // Spawn session timeout task.
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        process_session_timeout(state_clone, rx_terminator).await;
+    });
 
     // And a MakeService to handle each connection...
     let make_service = make_service_fn(move |_conn| {
@@ -53,16 +59,21 @@ pub async fn start_server() -> XenonResult<()> {
     let server = Server::bind(&addr).serve(make_service);
 
     // And run forever...
-    server
+    let result = server
         .await
-        .map_err(|e| XenonError::ServerError(e.to_string()))
+        .map_err(|e| XenonError::ServerError(e.to_string()));
+
+    if let Err(e) = tx_terminator.send(true) {
+        error!("Error terminating timeout task: {:?}", e);
+    }
+
+    result
 }
 
 async fn handle(
     req: Request<Body>,
     state: Arc<RwLock<XenonState>>,
 ) -> Result<Response<Body>, Infallible> {
-    debug!("Request: {:?}", req);
     let top_level_path: &str = req
         .uri()
         .path()
@@ -83,7 +94,8 @@ async fn handle(
     match result {
         Ok(x) => Ok(x),
         Err(XenonError::RespondWith(r)) => {
-            debug!("Sending error response: {:?}", r);
+            // TODO: format this as a WebDriver error.
+            debug!("Xenon replied with error: {:#?}", r);
             Ok(Response::builder()
                 .status(r.status())
                 .body(r.into())
@@ -94,15 +106,18 @@ async fn handle(
                         .unwrap()
                 }))
         }
-        Err(e) => Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(XenonResponse::InternalServerError(e.to_string()).into())
-            .unwrap_or_else(|_| {
-                Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::from("Xenon experienced an internal error"))
-                    .unwrap()
-            })),
+        Err(e) => {
+            error!("Internal Error: {:#?}", e);
+            Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(XenonResponse::InternalServerError(e.to_string()).into())
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Xenon experienced an internal error"))
+                        .unwrap()
+                }))
+        }
     }
 }
 
@@ -110,7 +125,6 @@ async fn handle_session(
     req: Request<Body>,
     state: Arc<RwLock<XenonState>>,
 ) -> XenonResult<Response<Body>> {
-    debug!("handle_session()");
     let path_elements: Vec<&str> = req.uri().path().trim_matches('/').split('/').collect();
 
     match path_elements.len() {
@@ -147,11 +161,21 @@ async fn handle_session(
             };
 
             let remaining_path: String = path_elements[2..].join("/");
-
-            let session = mutex_session.lock().await;
+            info!(
+                "Session {:?} :: {} {}",
+                xsession_id,
+                req.method(),
+                remaining_path
+            );
+            let mut session = mutex_session.lock().await;
             let response = session.forward_request(req, &remaining_path).await?;
 
             if is_delete && response.status().is_success() {
+                info!(
+                    "Session Delete {:?} :: port {}",
+                    xsession_id,
+                    session.port()
+                );
                 // Remove the actual session under write-lock. This should be fast.
                 {
                     let mut s = state.write().await;
@@ -159,16 +183,16 @@ async fn handle_session(
                 }
 
                 // Remove the session reference under read-lock on state and write-lock on
-                // service group. The service group may optionally shut down if this was
-                // the last connection to it and it has a spare.
+                // service group. The service may self-destruct if this was the last connection
+                // to it.
                 {
                     let s = state.read().await;
                     let rwlock_groups = s.service_groups();
-                    let mut groups = rwlock_groups.write().await;
+                    let rwlock_port_manager = s.port_manager();
+                    let (mut port_manager, mut groups) =
+                        tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
                     if let Some(group) = groups.get_mut(&session.service_group().to_string()) {
-                        if let Some(service) = group.get_service_mut(&session.port()) {
-                            service.delete_session(&xsession_id);
-                        }
+                        group.delete_session(session.port(), &xsession_id, &mut port_manager);
                     }
                 }
             }
@@ -182,24 +206,17 @@ pub async fn handle_create_session(
     req: Request<Body>,
     state: Arc<RwLock<XenonState>>,
 ) -> XenonResult<Response<Body>> {
-    debug!("handle_create_session()");
     let body_bytes = hyper::body::to_bytes(req)
         .await
         .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
-    debug!("GOT {:?}", body_bytes);
 
-    // // Deserialize the response into something WebDriver clients will understand.
-    // let mut resp: ConnectionResp = serde_json::from_slice(&body_bytes).map_err(|e| {
-    //     XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
-    // })?;
-    //
-    // let whole_body = hyper::body::aggregate(req)
-    //     .await
-    //     .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
+    // NOTE: Capabilities are ONLY used to match within Xenon. They are not sent to the
+    //       target webdriver.
     let w3c_capabilities: W3CCapabilities = serde_json::from_slice(&body_bytes)
         .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
+    info!("Request new session :: {:#?}", &w3c_capabilities);
     let capabilities = w3c_capabilities.capabilities;
-    debug!("Got caps: {:?}", capabilities);
+
     let (xsession_id, port, group_name) = {
         let s = state.read().await;
         let rwlock_groups = s.service_groups();
@@ -251,9 +268,9 @@ pub async fn handle_create_session(
         (xsession_id, service.port(), group_name)
     };
 
-    debug!("Create session");
     // Create the session. No locks are held at all here.
-    match Session::create(port, &group_name, &capabilities, xsession_id.clone()).await {
+    info!("Session Create {:?} :: port {}", xsession_id, port);
+    match Session::create(port, &group_name, xsession_id.clone()).await {
         Ok((session, response)) => {
             // Add session to pool.
             let mut s = state.write().await;
@@ -265,11 +282,11 @@ pub async fn handle_create_session(
             // Delete session from service.
             let s = state.read().await;
             let rwlock_groups = s.service_groups();
-            let mut groups = rwlock_groups.write().await;
+            let rwlock_port_manager = s.port_manager();
+            let (mut port_manager, mut groups) =
+                tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
             if let Some(group) = groups.get_mut(&group_name) {
-                if let Some(service) = group.get_service_mut(&port) {
-                    service.delete_session(&xsession_id);
-                }
+                group.delete_session(port, &xsession_id, &mut port_manager);
             }
             Ok(response)
         }
@@ -277,13 +294,49 @@ pub async fn handle_create_session(
             // Delete session from service.
             let s = state.read().await;
             let rwlock_groups = s.service_groups();
-            let mut groups = rwlock_groups.write().await;
+            let rwlock_port_manager = s.port_manager();
+            let (mut port_manager, mut groups) =
+                tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
             if let Some(group) = groups.get_mut(&group_name) {
-                if let Some(service) = group.get_service_mut(&port) {
-                    service.delete_session(&xsession_id);
-                }
+                group.delete_session(port, &xsession_id, &mut port_manager);
             }
             Err(e)
         }
+    }
+}
+
+async fn process_session_timeout(
+    state: Arc<RwLock<XenonState>>,
+    mut rx: tokio::sync::oneshot::Receiver<bool>,
+) {
+    while let Err(_) = rx.try_recv() {
+        let timedout_sessions = {
+            let s = state.read().await;
+            s.get_timeout_sessions().await
+        };
+
+        if !timedout_sessions.is_empty() {
+            let mut s = state.write().await;
+            let rwlock_groups = s.service_groups();
+            let rwlock_port_manager = s.port_manager();
+            let (mut port_manager, mut groups) =
+                tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
+
+            for xsession_id in timedout_sessions {
+                if let Some(mutex_session) = s.delete_session(&xsession_id) {
+                    let session = mutex_session.lock().await;
+
+                    info!(
+                        "Session Timeout {:?} :: port {}",
+                        xsession_id,
+                        session.port()
+                    );
+                    if let Some(group) = groups.get_mut(session.service_group()) {
+                        group.delete_session(session.port(), &xsession_id, &mut port_manager);
+                    }
+                }
+            }
+        }
+        delay_for(Duration::new(60, 0)).await;
     }
 }

@@ -19,7 +19,7 @@ pub struct WebDriverService {
 
 impl WebDriverService {
     pub fn spawn(port: ServicePort, path: &Path) -> XenonResult<Self> {
-        debug!("Spawning new webdriver on port {}: {:?}", port, path);
+        debug!("Spawn new WebDriver on port {}: {:?}", port, path);
         let process = Command::new(path).arg(format!("--port={}", port)).spawn()?;
 
         Ok(Self {
@@ -27,6 +27,22 @@ impl WebDriverService {
             process,
             sessions: HashSet::new(),
         })
+    }
+
+    pub fn terminate(mut self) {
+        assert!(self.sessions.is_empty());
+
+        debug!("Terminate WebDriver on port {}", self.port);
+        if let Err(e) = self.process.kill() {
+            // What to do? For now just log the error but let everything proceed.
+            // TODO: Options:
+            //       1. Ignore all such errors indefinitely (but still log them) <-- Current
+            //       2. Limp home mode (no new sessions, quit after last session ends, allowing
+            //          the service to auto-restart if running in docker etc)
+            //       3. Quit if safe - only if session count happens to hit 0 organically
+            //       4. Add process to a retry list and keep trying periodically
+            error!("Error terminating WebDriver on port {}: {:?}", self.port, e);
+        }
     }
 
     pub fn port(&self) -> ServicePort {
@@ -88,42 +104,35 @@ impl ServiceGroup {
         self.total_sessions() < max_sessions
     }
 
-    pub fn get_service_mut(&mut self, port: &ServicePort) -> Option<&mut WebDriverService> {
-        self.services.get_mut(&port)
-    }
-
     pub fn get_or_start_service(
         &mut self,
         port_manager: &mut PortManager,
     ) -> XenonResult<&mut WebDriverService> {
         let max_per_service = self.browser.sessions_per_driver() as usize;
         let max_sessions = self.browser.max_sessions() as usize;
-        let mut session_count = 0;
+        let mut overall_session_count = 0;
         let mut next_port: Option<u16> = None;
         let mut best = max_per_service;
         for (k, v) in self.services.iter() {
-            let num_sessions = v.sessions.len();
-            session_count += num_sessions;
-            if session_count >= max_sessions {
+            let num_sessions_for_service = v.sessions.len();
+            overall_session_count += num_sessions_for_service;
+            if overall_session_count >= max_sessions {
                 return Err(XenonError::NoSessionsAvailable);
             }
-            if session_count < best {
-                best = session_count;
+            if num_sessions_for_service < best {
+                best = num_sessions_for_service;
                 next_port = Some(*k);
             }
         }
 
         let next_port = match next_port {
-            Some(x) => {
-                debug!("Matched existing service on port: {}", x);
-                x
-            }
+            Some(p) => p,
             None => {
                 // Spawn new service.
                 let newport = match port_manager.lock_next_port() {
                     Some(p) => p,
                     None => {
-                        // We're out of ports.
+                        // We're all out of ports.
                         return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
                     }
                 };
@@ -138,5 +147,29 @@ impl ServiceGroup {
             .services
             .get_mut(&next_port)
             .unwrap_or_else(|| panic!("No service for port '{}'", next_port)))
+    }
+
+    pub fn delete_session(
+        &mut self,
+        port: ServicePort,
+        xsession_id: &XenonSessionId,
+        port_manager: &mut PortManager,
+    ) {
+        let mut should_terminate = false;
+        if let Some(service) = self.services.get_mut(&port) {
+            service.delete_session(xsession_id);
+
+            // Should we terminate this session?
+            if service.sessions.is_empty() {
+                should_terminate = true;
+            }
+        }
+
+        if should_terminate {
+            if let Some(service) = self.services.remove(&port) {
+                service.terminate();
+                port_manager.unlock_port(port);
+            }
+        }
     }
 }

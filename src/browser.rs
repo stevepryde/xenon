@@ -9,10 +9,6 @@ pub fn default_max_sessions() -> u32 {
     5
 }
 
-// TODO: Add flag for always having 1 service running. Maybe min_capacity?
-//       This will boost performance where we need a minimum number of
-//       WebDriver sessions available at any time.
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct BrowserConfig {
     name: String,
@@ -42,9 +38,47 @@ impl BrowserConfig {
         self.max_sessions
     }
 
+    /// Does this browser match the capabilities we are searching for?
+    /// Browser name must match.
+    /// For browser version and platform, the following rules apply:
+    /// 1. If the required browser version or platform is specified,
+    ///    the system will only consider it a match if those are both
+    ///    known and identical.
+    /// 2. If the actual version or platform is not specified on the browser
+    ///    object, it is considered unknown and thus will only match if the
+    ///    version or platform is not required.
     pub fn matches_capabilities(&self, capabilities: &Capabilities) -> bool {
-        // TODO: match version and OS as well.
-        self.name.to_lowercase() == capabilities.browser_name().to_lowercase()
+        if self.name.to_lowercase() != capabilities.browser_name().to_lowercase() {
+            return false;
+        }
+
+        if let Some(required_version) = capabilities.browser_version() {
+            if !required_version.is_empty() {
+                match &self.version {
+                    Some(v) => {
+                        if v != required_version {
+                            return false;
+                        }
+                    }
+                    None => return false,
+                }
+            }
+        }
+
+        if let Some(required_os) = capabilities.platform_name() {
+            if required_os != "ANY" {
+                match &self.os {
+                    Some(os) => {
+                        if os != required_os {
+                            return false;
+                        }
+                    }
+                    None => return false,
+                }
+            }
+        }
+
+        true
     }
 }
 

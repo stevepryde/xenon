@@ -1,13 +1,12 @@
-use crate::browser::Capabilities;
 use crate::error::{XenonError, XenonResult};
 use crate::portmanager::ServicePort;
 use crate::response::XenonResponse;
-use chrono::{DateTime, Local};
 use hyper::client::HttpConnector;
 use hyper::http::uri::Authority;
 use hyper::{Body, Client, Request, Response};
 use log::*;
 use serde::{Deserialize, Serialize};
+use tokio::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct XenonSessionId(String);
@@ -69,32 +68,43 @@ pub struct Session {
     port: ServicePort,
     client: Client<HttpConnector, Body>,
     // Timestamp of last request, for handling timeouts.
-    last_timestamp: DateTime<Local>,
+    last_timestamp: Instant,
 }
 
 impl Session {
     pub async fn create(
         port: ServicePort,
         service_group: &str,
-        capabilities: &Capabilities,
         xsession_id: XenonSessionId,
     ) -> XenonResult<(Self, Response<Body>)> {
         let client = Client::new();
 
         // Wait for port to be ready.
         let host = format!("localhost:{}", port);
+        let mut count = 0;
         loop {
             let status_req =
                 Session::build_request(hyper::Method::GET, &host, "/status", Body::empty())?;
-            match client.request(status_req).await {
-                Ok(response) => {
-                    debug!("STATUS is {:?}", response);
+            if let Ok(response) = client.request(status_req).await {
+                if response.status().is_success() {
                     break;
                 }
-                Err(e) => {
-                    debug!("STATUS ERROR: {:?}", e);
-                }
             }
+
+            count += 1;
+            if count > 30 {
+                return Err(XenonError::RespondWith(
+                    XenonResponse::ErrorCreatingSession(
+                        "Timed out waiting for WebDriver".to_string(),
+                    ),
+                ));
+            }
+
+            debug!(
+                "WebDriver not available on port {}. Will retry in 1 second...",
+                port
+            );
+            tokio::time::delay_for(Duration::new(1, 0)).await;
         }
 
         // Send empty capabilities request to the WebDriver because we already
@@ -110,12 +120,10 @@ impl Session {
         let req_out =
             Session::build_request(hyper::Method::POST, &host, "/session", Body::from(body_str))?;
 
-        debug!("WebDriver request: {:?}", req_out);
         let mut response = client
             .request(req_out)
             .await
             .map_err(|e| XenonError::RequestError(e.to_string()))?;
-        debug!("WebDriver returned {:?}", response);
         if !response.status().is_success() {
             return Err(XenonError::ResponsePassThrough(response));
         }
@@ -144,7 +152,6 @@ impl Session {
         let bytes_out = serde_json::to_vec(&resp).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
         })?;
-        debug!("Sending response: {:?}", bytes_out);
         let resp_out = Response::builder()
             .status(response.status())
             .body(Body::from(bytes_out))
@@ -158,7 +165,7 @@ impl Session {
                 port,
                 service_group: service_group.to_string(),
                 client,
-                last_timestamp: Local::now(),
+                last_timestamp: Instant::now(),
             },
             resp_out,
         ))
@@ -170,6 +177,10 @@ impl Session {
 
     pub fn service_group(&self) -> &str {
         &self.service_group
+    }
+
+    pub fn seconds_since_last_request(&self) -> u64 {
+        self.last_timestamp.elapsed().as_secs()
     }
 
     pub fn build_request(
@@ -195,12 +206,19 @@ impl Session {
     }
 
     pub async fn forward_request(
-        &self,
+        &mut self,
         req: Request<Body>,
         endpoint: &str,
     ) -> XenonResult<Response<Body>> {
+        self.last_timestamp = Instant::now();
+
         // Substitute the uri and send the request again...
-        let mut path_and_query = format!("/session/{}/{}", self.session_id, endpoint);
+        let mut path_and_query = if endpoint.is_empty() {
+            format!("/session/{}", self.session_id)
+        } else {
+            format!("/session/{}/{}", self.session_id, endpoint)
+        };
+
         if let Some(q) = req.uri().query() {
             path_and_query += "?";
             path_and_query += q;
