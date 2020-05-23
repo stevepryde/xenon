@@ -75,6 +75,7 @@ impl Session {
     pub async fn create(
         port: ServicePort,
         service_group: &str,
+        custom_capabilities: &serde_json::Value,
         xsession_id: XenonSessionId,
     ) -> XenonResult<(Self, Response<Body>)> {
         let client = Client::new();
@@ -112,7 +113,8 @@ impl Session {
         let caps = serde_json::json!({
             "capabilities": {
                 "firstMatch": [{}], "alwaysMatch": {}
-            }
+            },
+            "desiredCapabilities": custom_capabilities
         });
         let body_str = serde_json::to_string(&caps).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))

@@ -111,6 +111,11 @@ impl Capabilities {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct W3CCapabilities {
+    /// The W3C capabilities object, used to match browser/version/OS etc.
     pub capabilities: Capabilities,
+    /// All of the additional browser-specific capabilities such as extra arguments etc.
+    #[serde(default)]
+    pub desired_capabilities: serde_json::Value,
 }
