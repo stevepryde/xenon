@@ -66,10 +66,11 @@ impl BrowserConfig {
         }
 
         if let Some(required_os) = capabilities.platform_name() {
-            if required_os != "ANY" {
+            let required_os = required_os.to_lowercase();
+            if required_os.to_lowercase() != "any" {
                 match &self.os {
                     Some(os) => {
-                        if os != required_os {
+                        if os.to_lowercase() != required_os {
                             return false;
                         }
                     }
