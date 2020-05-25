@@ -40,7 +40,7 @@ impl ToString for XenonSessionId {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ConnectionData {
-    #[serde(default, rename(deserialize = "sessionId"))]
+    #[serde(default, rename = "sessionId")]
     session_id: String,
     #[serde(default)]
     capabilities: serde_json::Value,
@@ -48,7 +48,7 @@ struct ConnectionData {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ConnectionResp {
-    #[serde(default)]
+    #[serde(default, rename = "sessionId")]
     session_id: String,
     value: ConnectionData,
 }
@@ -154,6 +154,7 @@ impl Session {
         let bytes_out = serde_json::to_vec(&resp).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
         })?;
+
         let resp_out = Response::builder()
             .status(response.status())
             .body(Body::from(bytes_out))

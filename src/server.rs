@@ -87,7 +87,7 @@ async fn handle(
         x if x.is_empty() => Ok(Response::new(Body::from("TODO: show status page"))),
         "session" => handle_session(req, state, false).await,
         "wd" => handle_session(req, state, true).await,
-        p => Err(XenonError::RespondWith(XenonResponse::PathNotFound(
+        p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
             p.to_string(),
         ))),
     };
@@ -95,7 +95,6 @@ async fn handle(
     match result {
         Ok(x) => Ok(x),
         Err(XenonError::RespondWith(r)) => {
-            // TODO: format this as a WebDriver error.
             debug!("Xenon replied with error: {:#?}", r);
             Ok(Response::builder()
                 .status(r.status())
