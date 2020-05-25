@@ -274,7 +274,7 @@ pub async fn handle_create_session(
         // This only holds a write lock on the port manager and service groups,
         // so it only blocks the creation or deletion of other services or sessions.
         // This will not block any in-progress sessions.
-        let service = group.get_or_start_service(&mut port_manager)?;
+        let service = group.get_or_start_service(&mut port_manager).await?;
         let xsession_id = XenonSessionId::new();
         service.add_session(xsession_id.clone());
         (xsession_id, service.port(), group_name)

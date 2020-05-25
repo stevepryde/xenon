@@ -6,7 +6,7 @@ use crate::session::XenonSessionId;
 use log::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::{Child, Command};
+use tokio::process::{Child, Command};
 
 /// A WebDriverService represents one instance of a webdriver binary such
 /// as chromedriver, to which one or more sessions can attach.
@@ -18,10 +18,12 @@ pub struct WebDriverService {
 }
 
 impl WebDriverService {
-    pub fn spawn(port: ServicePort, path: &Path) -> XenonResult<Self> {
+    pub async fn spawn(port: ServicePort, path: &Path) -> XenonResult<Self> {
         debug!("Spawn new WebDriver on port {}: {:?}", port, path);
-        let process = Command::new(path).arg(format!("--port={}", port)).spawn()?;
-
+        let process = Command::new(path)
+            .arg(format!("--port={}", port))
+            .kill_on_drop(true)
+            .spawn()?;
         Ok(Self {
             port,
             process,
@@ -104,7 +106,7 @@ impl ServiceGroup {
         self.total_sessions() < max_sessions
     }
 
-    pub fn get_or_start_service(
+    pub async fn get_or_start_service(
         &mut self,
         port_manager: &mut PortManager,
     ) -> XenonResult<&mut WebDriverService> {
@@ -136,7 +138,7 @@ impl ServiceGroup {
                         return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
                     }
                 };
-                let service = WebDriverService::spawn(newport, &self.browser.driver_path())?;
+                let service = WebDriverService::spawn(newport, &self.browser.driver_path()).await?;
                 self.services.insert(newport, service);
                 newport
             }
