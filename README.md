@@ -2,7 +2,7 @@
 
 Xenon is a WebDriver proxy, for running multiple WebDriver sessions through a single hub.
 
-This makes it effectively a drop-in alternative to Selenium Server (Hub/Standalone).
+This makes it effectively a drop-in alternative to Selenium Server (Grid features not yet supported).
 
 ## Purpose
 
@@ -93,3 +93,31 @@ You should see something like this:
 You can now run your selenium/WebDriver tests and point them at 127.0.0.1:4444
 just as you normally would. Xenon also optionally supports running at the path
 /wd/hub for compatibility with tests that are set up to use selenium hub.
+
+### Running under Xvfb for "headless" operation (Linux only)
+
+You can run Xenon under Xvfb which creates a new X server and runs the browser
+sessions there instead, so that you don't end up with your mouse and keyboard
+inputs interfering with tests.
+
+To do this, just install Xvfb using your distro's package manager and then run:
+
+    xvfb-run --server-args="-screen 0 1024x768x24" ./xenon
+    
+#### VNC output
+
+If you run Xvfb (as above) you can also get a live view by running a VNC
+server on the Xvfb display.
+
+https://stackoverflow.com/questions/12050021/how-to-make-xvfb-display-visible
+
+## Planned features
+
+- Support for forwarding requests from one Xenon server to another, including across a network.
+- Docker and Docker Compose
+    
+## LICENSE
+
+This work is licensed under MIT.
+
+`SPDX-License-Identifier: MIT`

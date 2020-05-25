@@ -1,8 +1,13 @@
 [package]
 name = "xenon"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Steve Pryde <steve@stevepryde.com>"]
 edition = "2018"
+license = "MIT"
+description = "Xenon is a WebDriver proxy, for running multiple WebDriver sessions through a single hub"
+homepage = "https://github.com/stevepryde/xenon"
+repository = "https://github.com/stevepryde/xenon"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

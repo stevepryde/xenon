@@ -107,14 +107,17 @@ async fn handle(
                 }))
         }
         Err(e) => {
+            // Coerce all errors into WebDriver-compatible response.
             error!("Internal Error: {:#?}", e);
+            let r = XenonResponse::InternalServerError(e.to_string());
+
             Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(XenonResponse::InternalServerError(e.to_string()).into())
+                .status(r.status())
+                .body(r.into())
                 .unwrap_or_else(|_| {
                     Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Xenon experienced an internal error"))
+                        .body(Body::from("Xenon failed to serialize an error"))
                         .unwrap()
                 }))
         }
