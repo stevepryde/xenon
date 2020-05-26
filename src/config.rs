@@ -40,16 +40,15 @@ impl XenonConfig {
     }
 }
 
-pub fn load_config(filename: &str) -> Result<XenonConfig, XenonError> {
-    let config_path = Path::new(filename);
+pub fn load_config(config_path: &Path) -> Result<XenonConfig, XenonError> {
     if !config_path.exists() {
-        return Err(XenonError::ConfigNotFound(filename.to_string()));
+        return Err(XenonError::ConfigNotFound(config_path.to_path_buf()));
     }
 
     let config_str = std::fs::read_to_string(config_path)
-        .map_err(|e| XenonError::ConfigLoadError(filename.to_string(), e.to_string()))?;
+        .map_err(|e| XenonError::ConfigLoadError(config_path.to_path_buf(), e.to_string()))?;
     let config = serde_yaml::from_str(&config_str)
-        .map_err(|e| XenonError::ConfigLoadError(filename.to_string(), e.to_string()))?;
+        .map_err(|e| XenonError::ConfigLoadError(config_path.to_path_buf(), e.to_string()))?;
     Ok(config)
 }
 

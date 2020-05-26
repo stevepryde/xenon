@@ -9,23 +9,44 @@ use hyper::{Body, Request, Response, Server, StatusCode};
 use log::*;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
+use structopt::StructOpt;
 use tokio::sync::RwLock;
 use tokio::time::{delay_for, Duration};
 
+#[derive(Debug, StructOpt)]
+#[structopt(name = "Xenon", about = "A powerful WebDriver proxy")]
+pub struct Opt {
+    /// The port to listen on. Default is 4444.
+    #[structopt(short, long, env = "XENON_PORT")]
+    port: Option<u16>,
+
+    /// The path to the YAML config file. Default is xenon.yml.
+    #[structopt(short, long, parse(from_os_str), env = "XENON_CFG")]
+    cfg: Option<PathBuf>,
+}
+
 pub async fn start_server() -> XenonResult<()> {
-    let port: i32 = std::option_env!("XENON_PORT")
-        .unwrap_or("4444")
-        .parse()
-        .map_err(|_| XenonError::InvalidPort)?;
+    let opt = Opt::from_args();
+
+    // Prefer CLI arg, otherwise environment variable, otherwise 4444.
+    let port: u16 = opt.port.unwrap_or(4444);
+    if port < 1024 {
+        return Err(XenonError::InvalidPort);
+    }
+
     let addr: SocketAddr = format!("127.0.0.1:{}", port)
         .parse()
         .map_err(|_| XenonError::InvalidPort)?;
 
     // Read config.
-    let config_filename = std::option_env!("XENON_CFG").unwrap_or("xenon.yml");
-    let config = load_config(config_filename).unwrap_or_else(|e| {
-        warn!("Warning: {}", e.to_string());
+    let config_filename = opt.cfg.unwrap_or_else(|| PathBuf::from("xenon.yml"));
+    let config = load_config(&config_filename).unwrap_or_else(|e| {
+        warn!(
+            "Warning: {} (Default config will be used instead)",
+            e.to_string()
+        );
 
         // Use default config.
         XenonConfig::new()

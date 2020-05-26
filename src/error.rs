@@ -1,5 +1,6 @@
 use crate::response::XenonResponse;
 use hyper::{Body, Response};
+use std::path::PathBuf;
 use thiserror::Error;
 
 pub type XenonResult<T> = Result<T, XenonError>;
@@ -13,9 +14,9 @@ pub enum XenonError {
     #[error("WebDriver request failed: {0}")]
     RequestError(String),
     #[error("Config file not found: {0}")]
-    ConfigNotFound(String),
+    ConfigNotFound(PathBuf),
     #[error("Error loading config from file '{0}': {1}")]
-    ConfigLoadError(String, String),
+    ConfigLoadError(PathBuf, String),
     #[error("Error response returned to client")]
     RespondWith(XenonResponse),
     #[error("WebDriver response passed through to client")]
