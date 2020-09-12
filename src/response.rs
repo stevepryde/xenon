@@ -11,6 +11,10 @@ pub enum XenonResponse {
     NoMatchingBrowser,
     NoSessionsAvailable,
     InternalServerError(String),
+    ErrorRegisteringNode(String),
+    ErrorUpdatingNode(String),
+    ErrorDeregisteringNode(String),
+    NodeNotFound,
 }
 
 impl XenonResponse {

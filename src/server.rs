@@ -1,13 +1,16 @@
-use crate::browser::W3CCapabilities;
+use crate::browser::{BrowserConfig, W3CCapabilities};
 use crate::config::{load_config, XenonConfig};
 use crate::error::{XenonError, XenonResult};
+use crate::nodes::{NodeId, RemoteNode, RemoteNodeCreate};
 use crate::response::XenonResponse;
 use crate::session::{Session, XenonSessionId};
 use crate::state::XenonState;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use log::*;
+use serde::Serialize;
 use std::convert::Infallible;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -100,6 +103,7 @@ async fn handle(
         x if x.is_empty() => Ok(Response::new(Body::from("TODO: show status page"))),
         "session" => handle_session(req, state, false).await,
         "wd" => handle_session(req, state, true).await,
+        "node" => handle_node(req, state).await,
         p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
             p.to_string(),
         ))),
@@ -157,7 +161,10 @@ async fn handle_session(
     match path_elements.len() {
         0 => unreachable!(),
         1 => match *req.method() {
-            hyper::Method::POST => handle_create_session(req, state).await,
+            hyper::Method::POST => {
+                // TODO: if no matching browser, also check nodes.
+                handle_create_session(req, state).await
+            }
             _ => Err(XenonError::RespondWith(XenonResponse::MethodNotFound(
                 path_elements.join("/"),
             ))),
@@ -345,7 +352,7 @@ async fn process_session_timeout(
     state: Arc<RwLock<XenonState>>,
     mut rx: tokio::sync::oneshot::Receiver<bool>,
 ) {
-    while let Err(_) = rx.try_recv() {
+    while rx.try_recv().is_err() {
         let timedout_sessions = {
             let s = state.read().await;
             s.get_timeout_sessions().await
@@ -375,4 +382,139 @@ async fn process_session_timeout(
         }
         delay_for(Duration::new(60, 0)).await;
     }
+}
+
+async fn handle_node(
+    req: Request<Body>,
+    state: Arc<RwLock<XenonState>>,
+) -> XenonResult<Response<Body>> {
+    let path_elements: Vec<String> = req
+        .uri()
+        .path()
+        .trim_matches('/')
+        .split('/')
+        .map(|x| x.to_string())
+        .collect();
+
+    if path_elements.len() < 2 {
+        return Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
+            path_elements.join("/"),
+        )));
+    }
+
+    let body_bytes = hyper::body::to_bytes(req)
+        .await
+        .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
+
+    match path_elements[1].as_str() {
+        "register" => {
+            let node_info: RemoteNodeCreate = serde_json::from_slice(&body_bytes).map_err(|e| {
+                XenonError::RespondWith(XenonResponse::ErrorRegisteringNode(e.to_string()))
+            })?;
+            let node = RemoteNode::new(node_info);
+
+            let s = state.read().await;
+            let rwlock_nodes = s.remote_nodes();
+            let mut nodes = rwlock_nodes.write().await;
+            let node_id = node.id();
+            nodes.insert(node.id(), node);
+
+            #[derive(Debug, Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct RegisterNodeResponse {
+                node_id: String,
+            }
+
+            let data = RegisterNodeResponse {
+                node_id: node_id.to_string(),
+            };
+            let body = Body::from(
+                serde_json::to_string(&data)
+                    .unwrap_or_else(|e| format!("Xenon failed to serialize node id: {}", e)),
+            );
+
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Xenon failed to serialize node id"))
+                        .unwrap()
+                }))
+        }
+        "update" => {
+            let node: RemoteNode = serde_json::from_slice(&body_bytes).map_err(|e| {
+                XenonError::RespondWith(XenonResponse::ErrorUpdatingNode(e.to_string()))
+            })?;
+
+            let found = {
+                let s = state.read().await;
+                let rwlock_nodes = s.remote_nodes();
+                let nodes = rwlock_nodes.read().await;
+                nodes.contains_key(&node.id())
+            };
+
+            if !found {
+                return Err(XenonError::RespondWith(XenonResponse::NodeNotFound));
+            }
+
+            let s = state.read().await;
+            let rwlock_nodes = s.remote_nodes();
+            let mut nodes = rwlock_nodes.write().await;
+            match nodes.get_mut(&node.id()) {
+                Some(n) => {
+                    n.update(node);
+
+                    Ok(Response::builder()
+                        .status(StatusCode::NO_CONTENT)
+                        .body(Body::from(String::from("OK")))
+                        .unwrap_or_else(|_| {
+                            Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Body::from("Xenon failed to serialize node id"))
+                                .unwrap()
+                        }))
+                }
+                None => Err(XenonError::RespondWith(XenonResponse::NodeNotFound)),
+            }
+        }
+        "deregister" => {
+            let node_id: NodeId = serde_json::from_slice(&body_bytes).map_err(|e| {
+                XenonError::RespondWith(XenonResponse::ErrorDeregisteringNode(e.to_string()))
+            })?;
+
+            let s = state.read().await;
+            let rwlock_nodes = s.remote_nodes();
+            let mut nodes = rwlock_nodes.write().await;
+            match nodes.remove(&node_id) {
+                Some(n) => {
+                    // TODO: Delete any sessions for this node.
+
+                    Ok(Response::builder()
+                        .status(StatusCode::NO_CONTENT)
+                        .body(Body::from(String::from("OK")))
+                        .unwrap_or_else(|_| {
+                            Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Body::from("Xenon failed to serialize node id"))
+                                .unwrap()
+                        }))
+                }
+                None => Err(XenonError::RespondWith(XenonResponse::NodeNotFound)),
+            }
+        }
+        p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
+            path_elements.join("/"),
+        ))),
+    }
+    // TODO: support node commands:
+
+    // Considerations:
+    // Remote node sessions should be able to timeout here. If we timeout, kill the remote session as if it were a webdriver.
+    // If a remote session returns an error, delete it and return the error.
+    // When creating/deleting a session, if we're a node, send a /node/update to the hub.
+    // Capture Ctrl+C and send disconnect to the hub.
+    // Connect to hub on startup. Keep trying connection in background until successful.
+    // Allow node to specify its ip in config. If not specified, auto-detect it.
 }

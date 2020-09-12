@@ -1,4 +1,5 @@
 use crate::config::XenonConfig;
+use crate::nodes::{NodeId, RemoteNode};
 use crate::portmanager::PortManager;
 use crate::service::{ServiceGroup, ServiceGroupName};
 use crate::session::{Session, XenonSessionId};
@@ -27,6 +28,14 @@ pub struct XenonState {
     // main session path lock-free where we are simply using a session and not
     // creating or deleting one.
     sessions: HashMap<XenonSessionId, Arc<Mutex<Session>>>,
+
+    // A RemoteNode can contain several RemoteServiceGroup entries. Each of these
+    // behaves similarly to a local ServiceGroup, but the requests are forwarded
+    // to its parent node instead of a local service.
+    // When matching capabilities, local service groups are always preferred.
+    // Remote nodes will be queried only when local service groups cannot service
+    // a new session request.
+    remote_nodes: Arc<RwLock<IndexMap<NodeId, RemoteNode>>>,
 }
 
 impl XenonState {
@@ -42,6 +51,7 @@ impl XenonState {
             service_groups: Arc::new(RwLock::new(service_groups)),
             port_manager: Arc::new(RwLock::new(port_manager)),
             sessions: HashMap::new(),
+            remote_nodes: Arc::new(RwLock::new(IndexMap::new())),
         }
     }
 
@@ -51,6 +61,10 @@ impl XenonState {
 
     pub fn service_groups(&self) -> Arc<RwLock<IndexMap<ServiceGroupName, ServiceGroup>>> {
         self.service_groups.clone()
+    }
+
+    pub fn remote_nodes(&self) -> Arc<RwLock<IndexMap<NodeId, RemoteNode>>> {
+        self.remote_nodes.clone()
     }
 
     pub fn get_session(&self, session_id: &XenonSessionId) -> Option<Arc<Mutex<Session>>> {

@@ -10,7 +10,7 @@ pub fn default_max_sessions() -> u32 {
     5
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserConfig {
     name: String,
     version: Option<String>,
