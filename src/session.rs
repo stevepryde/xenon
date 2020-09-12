@@ -75,7 +75,8 @@ impl Session {
     pub async fn create(
         port: ServicePort,
         service_group: &str,
-        custom_capabilities: &serde_json::Value,
+        capabilities: &serde_json::Value,
+        desired_capabilities: &serde_json::Value,
         xsession_id: XenonSessionId,
     ) -> XenonResult<(Self, Response<Body>)> {
         let client = Client::new();
@@ -108,13 +109,10 @@ impl Session {
             tokio::time::delay_for(Duration::new(1, 0)).await;
         }
 
-        // Send empty capabilities request to the WebDriver because we already
-        // handled the capabilities matching internally.
+        // Send capabilities to driver verbatim.
         let caps = serde_json::json!({
-            "capabilities": {
-                "firstMatch": [{}], "alwaysMatch": {}
-            },
-            "desiredCapabilities": custom_capabilities
+            "capabilities": capabilities,
+            "desiredCapabilities": desired_capabilities
         });
         let body_str = serde_json::to_string(&caps).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))

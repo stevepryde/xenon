@@ -250,8 +250,8 @@ pub async fn handle_create_session(
     let w3c_capabilities: W3CCapabilities = serde_json::from_slice(&body_bytes)
         .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
     info!("Request new session :: {:#?}", &w3c_capabilities);
-    let capabilities = w3c_capabilities.capabilities;
-    let custom_capabilities = w3c_capabilities.desired_capabilities;
+    let capabilities = serde_json::from_value(w3c_capabilities.capabilities.clone())
+        .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
 
     let (xsession_id, port, group_name) = {
         let s = state.read().await;
@@ -306,7 +306,15 @@ pub async fn handle_create_session(
 
     // Create the session. No locks are held at all here.
     info!("Session Create {:?} :: port {}", xsession_id, port);
-    match Session::create(port, &group_name, &custom_capabilities, xsession_id.clone()).await {
+    match Session::create(
+        port,
+        &group_name,
+        &w3c_capabilities.capabilities,
+        &w3c_capabilities.desired_capabilities,
+        xsession_id.clone(),
+    )
+    .await
+    {
         Ok((session, response)) => {
             // Add session to pool.
             let mut s = state.write().await;
