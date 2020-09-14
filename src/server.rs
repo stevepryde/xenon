@@ -42,15 +42,7 @@ pub async fn start_server() -> XenonResult<()> {
 
     // Read config.
     let config_filename = opt.cfg.unwrap_or_else(|| PathBuf::from("xenon.yml"));
-    let config = load_config(&config_filename).unwrap_or_else(|e| {
-        warn!(
-            "Warning: {} (Default config will be used instead)",
-            e.to_string()
-        );
-
-        // Use default config.
-        XenonConfig::new()
-    });
+    let config = load_config(&config_filename)?;
     debug!("Config loaded:\n{:#?}", config);
     let state = Arc::new(RwLock::new(XenonState::new(config)));
 

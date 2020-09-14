@@ -5,3 +5,4 @@ browsers:
   - name: firefox
     driver_path: /usr/local/bin/geckodriver
     max_sessions: 10
+

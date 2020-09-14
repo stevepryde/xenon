@@ -33,6 +33,9 @@ impl XenonState {
     pub fn new(config: XenonConfig) -> Self {
         let port_manager = PortManager::new(&config);
         let mut service_groups = IndexMap::new();
+
+        log::info!("{:?}", config);
+
         for browser in config.browsers() {
             let group = ServiceGroup::new(browser);
             service_groups.insert(group.name().to_string(), group);
