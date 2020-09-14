@@ -1,7 +1,0 @@
-browsers:
-  - name: chrome
-    driver_path: /usr/local/bin/chromedriver
-    max_sessions: 10
-  - name: firefox
-    driver_path: /usr/local/bin/geckodriver
-    max_sessions: 10
