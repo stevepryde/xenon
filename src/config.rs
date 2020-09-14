@@ -127,7 +127,6 @@ mod test {
 
     #[test]
     fn test_port_parser_range() {
-        pretty_env_logger::init();
         assert_eq!(parse_port_list(&["2000-2001"]), vec![2000, 2001]);
         assert_eq!(parse_port_list(&["2000-2000"]), vec![2000]);
 
