@@ -155,6 +155,7 @@ impl Session {
 
         let resp_out = Response::builder()
             .status(response.status())
+            .header("Content-Type", "application/json")
             .body(Body::from(bytes_out))
             .map_err(|e| {
                 XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
