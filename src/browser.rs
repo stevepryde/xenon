@@ -15,6 +15,7 @@ pub struct BrowserConfig {
     version: Option<String>,
     os: Option<String>,
     driver_path: PathBuf,
+    args: Option<Vec<String>>,
     #[serde(default = "default_sessions_per_driver")]
     sessions_per_driver: u32,
     #[serde(default = "default_max_sessions")]
@@ -28,6 +29,10 @@ impl BrowserConfig {
 
     pub fn driver_path(&self) -> &Path {
         &self.driver_path.as_path()
+    }
+
+    pub fn args(&self) -> &Option<Vec<String>> {
+        &self.args
     }
 
     pub fn sessions_per_driver(&self) -> u32 {

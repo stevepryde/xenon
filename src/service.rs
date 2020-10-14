@@ -18,12 +18,24 @@ pub struct WebDriverService {
 }
 
 impl WebDriverService {
-    pub async fn spawn(port: ServicePort, path: &Path) -> XenonResult<Self> {
-        debug!("Spawn new WebDriver on port {}: {:?}", port, path);
-        let process = Command::new(path)
-            .arg(format!("--port={}", port))
-            .kill_on_drop(true)
-            .spawn()?;
+    pub async fn spawn(
+        port: ServicePort,
+        path: &Path,
+        args: &Option<Vec<String>>,
+    ) -> XenonResult<Self> {
+        let port_arg = &[format!("--port={}", port)];
+        let args = args
+            .as_ref()
+            .map(|args| args.as_slice())
+            .unwrap_or_else(|| &[])
+            .iter()
+            .chain(port_arg);
+
+        debug!(
+            "Spawn new WebDriver on port {} with args {:?}: {:?}",
+            port, args, path
+        );
+        let process = Command::new(path).args(args).kill_on_drop(true).spawn()?;
         Ok(Self {
             port,
             process,
@@ -138,7 +150,12 @@ impl ServiceGroup {
                         return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
                     }
                 };
-                let service = WebDriverService::spawn(newport, &self.browser.driver_path()).await?;
+                let service = WebDriverService::spawn(
+                    newport,
+                    &self.browser.driver_path(),
+                    self.browser.args(),
+                )
+                .await?;
                 self.services.insert(newport, service);
                 newport
             }
