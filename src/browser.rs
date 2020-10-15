@@ -14,7 +14,7 @@ pub struct BrowserConfig {
     name: String,
     version: Option<String>,
     os: Option<String>,
-    driver_path: PathBuf,
+    driver_path: Option<PathBuf>,
     args: Option<Vec<String>>,
     #[serde(default = "default_sessions_per_driver")]
     sessions_per_driver: u32,
@@ -28,7 +28,17 @@ impl BrowserConfig {
     }
 
     pub fn driver_path(&self) -> &Path {
-        &self.driver_path.as_path()
+        match &self.driver_path {
+            Some(path) => path.as_path(),
+            _ => {
+                // it's better to move it to a serialization implemenation
+                match self.name.as_str() {
+                    "firefox" => "geckodriver".as_ref(),
+                    "chrome" => "chromedriver".as_ref(),
+                    _ => unimplemented!("There's no default webdriver name for {} browser", self.name),
+                }
+            }
+        }
     }
 
     pub fn args(&self) -> &Option<Vec<String>> {
