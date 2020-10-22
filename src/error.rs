@@ -17,6 +17,8 @@ pub enum XenonError {
     ConfigNotFound(PathBuf),
     #[error("Error loading config from file '{0}': {1}")]
     ConfigLoadError(PathBuf, String),
+    #[error("Encountered an unexpected browser in config '{0}': {1}")]
+    ConfigUnexpectedBrowser(String, String),
     #[error("Error response returned to client")]
     RespondWith(XenonResponse),
     #[error("WebDriver response passed through to client")]

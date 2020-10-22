@@ -1,3 +1,4 @@
+use crate::error::XenonError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -14,7 +15,9 @@ pub struct BrowserConfig {
     name: String,
     version: Option<String>,
     os: Option<String>,
-    driver_path: PathBuf,
+    /// driver_path always contains a path to a webdriver
+    /// It may be configured value or a default one.
+    driver_path: Option<PathBuf>,
     args: Option<Vec<String>>,
     #[serde(default = "default_sessions_per_driver")]
     sessions_per_driver: u32,
@@ -28,7 +31,12 @@ impl BrowserConfig {
     }
 
     pub fn driver_path(&self) -> &Path {
-        &self.driver_path.as_path()
+        match &self.driver_path {
+            Some(path) => path.as_path(),
+            _ => {
+                unreachable!();
+            }
+        }
     }
 
     pub fn args(&self) -> &Option<Vec<String>> {
@@ -85,6 +93,31 @@ impl BrowserConfig {
         }
 
         true
+    }
+
+    /// Does a preparation of a config for its usage
+    /// sets a default fields, make a validation
+    pub fn sanitize(&mut self) -> Result<(), XenonError> {
+        if self.driver_path.is_none() {
+            let default = default_webdriver(&self.name).ok_or_else(|| {
+                XenonError::ConfigUnexpectedBrowser(
+                    self.name.clone(),
+                    "A default webdriver can't be found. You may need to use a custom path option via 'driver_path' setting".to_owned(),
+                )
+            })?;
+
+            self.driver_path = Some(default.to_owned());
+        }
+
+        Ok(())
+    }
+}
+
+pub fn default_webdriver<S: AsRef<str>>(browser: S) -> Option<&'static Path> {
+    match browser.as_ref() {
+        "firefox" => Some("geckodriver".as_ref()),
+        "chrome" => Some("chromedriver".as_ref()),
+        _ => None,
     }
 }
 

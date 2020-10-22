@@ -47,8 +47,13 @@ pub fn load_config(config_path: &Path) -> Result<XenonConfig, XenonError> {
 
     let config_str = std::fs::read_to_string(config_path)
         .map_err(|e| XenonError::ConfigLoadError(config_path.to_path_buf(), e.to_string()))?;
-    let config = serde_yaml::from_str(&config_str)
+    let mut config: XenonConfig = serde_yaml::from_str(&config_str)
         .map_err(|e| XenonError::ConfigLoadError(config_path.to_path_buf(), e.to_string()))?;
+
+    for browser_cfg in &mut config.browsers {
+        browser_cfg.sanitize()?;
+    }
+
     Ok(config)
 }
 
