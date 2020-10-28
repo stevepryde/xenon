@@ -1,25 +1,26 @@
-use crate::browser::{BrowserConfig, Capabilities, W3CCapabilities};
-use crate::config::{load_config, XenonConfig};
-use crate::error::{XenonError, XenonResult};
-use crate::nodes::{NodeId, RemoteNode, RemoteNodeCreate};
-use crate::response::XenonResponse;
-use crate::service::{ServiceGroup, WebDriverService};
-use crate::session::{Session, XenonSessionId};
-use crate::state::XenonState;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use hyper::http::uri::{Authority, Scheme};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use log::*;
 use serde::Serialize;
-use std::convert::Infallible;
-use std::fmt::Display;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::RwLock;
 use tokio::time::{delay_for, Duration};
+
+use crate::browser::{Capabilities, W3CCapabilities};
+use crate::config::load_config;
+use crate::error::{XenonError, XenonResult};
+use crate::nodes::{NodeId, RemoteNode, RemoteNodeCreate};
+use crate::response::XenonResponse;
+use crate::service::ServiceGroup;
+use crate::session::{Session, XenonSessionId};
+use crate::state::XenonState;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "Xenon", about = "A powerful WebDriver proxy")]
@@ -420,7 +421,7 @@ pub async fn handle_create_session_node(
     let mut matched_caps = false;
     for node in nodes.values() {
         for group in &node.service_groups {
-            if group.browser.matches_capabilities(capabilities) {
+            if group.browser.matches_capabilities(capabilities) && group.remaining_sessions > 0 {
                 matched_caps = true;
                 info!(
                     "Attempt Session Create {:?} :: Node {}",
@@ -574,7 +575,7 @@ async fn handle_node(
             let mut nodes = rwlock_nodes.write().await;
             match nodes.get_mut(&node.id()) {
                 Some(n) => {
-                    n.update(node);
+                    n.update(node)?;
 
                     Ok(Response::builder()
                         .status(StatusCode::NO_CONTENT)
@@ -598,7 +599,7 @@ async fn handle_node(
             let rwlock_nodes = s.remote_nodes();
             let mut nodes = rwlock_nodes.write().await;
             match nodes.remove(&node_id) {
-                Some(n) => {
+                Some(_n) => {
                     // TODO: Delete any sessions for this node.
 
                     Ok(Response::builder()
@@ -614,7 +615,7 @@ async fn handle_node(
                 None => Err(XenonError::RespondWith(XenonResponse::NodeNotFound)),
             }
         }
-        p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
+        _p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
             path_elements.join("/"),
         ))),
     }

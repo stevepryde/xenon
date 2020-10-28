@@ -12,11 +12,6 @@ pub struct XenonConfig {
 }
 
 impl XenonConfig {
-    pub fn new() -> Self {
-        // TODO: validate config.
-        Self::default()
-    }
-
     /// Get the port list as a Vec of individual ports.
     pub fn get_port_list(&self) -> Vec<ServicePort> {
         let port_list = parse_port_list(&self.ports);

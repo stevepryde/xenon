@@ -3,7 +3,7 @@ use crate::portmanager::ServicePort;
 use crate::response::XenonResponse;
 use hyper::client::HttpConnector;
 use hyper::http::uri::{Authority, Scheme};
-use hyper::{Body, Client, Request, Response, Uri};
+use hyper::{Body, Client, Request, Response};
 use log::*;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, Instant};

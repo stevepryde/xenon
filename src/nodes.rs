@@ -76,12 +76,12 @@ pub struct RemoteNode {
 
 impl RemoteNode {
     pub fn new(node_info: RemoteNodeCreate) -> XenonResult<Self> {
-        let (scheme, authority) = parse_url(&node_info.url).ok_or(XenonError::RespondWith(
-            XenonResponse::ErrorRegisteringNode(format!(
+        let (scheme, authority) = parse_url(&node_info.url).ok_or_else(|| {
+            XenonError::RespondWith(XenonResponse::ErrorRegisteringNode(format!(
                 "Error parsing url for remote node: {}",
                 node_info.url
-            )),
-        ))?;
+            )))
+        })?;
 
         Ok(Self {
             id: NodeId::new(),
@@ -109,12 +109,12 @@ impl RemoteNode {
     pub fn update(&mut self, node: RemoteNode) -> XenonResult<bool> {
         // Avoid races due to network latency. Most recent update must apply.
         if node.comms_id > self.comms_id {
-            let (scheme, authority) = parse_url(&node.url).ok_or(XenonError::RespondWith(
-                XenonResponse::ErrorUpdatingNode(format!(
+            let (scheme, authority) = parse_url(&node.url).ok_or_else(|| {
+                XenonError::RespondWith(XenonResponse::ErrorUpdatingNode(format!(
                     "Error parsing url for remote node: {}",
                     node.url
-                )),
-            ))?;
+                )))
+            })?;
             self.scheme = scheme;
             self.authority = authority;
             self.name = node.name;
