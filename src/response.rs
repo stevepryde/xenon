@@ -48,6 +48,13 @@ impl Into<Body> for XenonResponse {
                 String::from("Session limit reached. No available sessions"),
             ),
             XenonResponse::InternalServerError(x) => ("unknown error", x.clone()),
+            XenonResponse::ErrorRegisteringNode(x) => ("error registering node", x.clone()),
+            XenonResponse::ErrorUpdatingNode(x) => ("error updating node", x.clone()),
+            XenonResponse::ErrorDeregisteringNode(x) => ("error deregistering node", x.clone()),
+            XenonResponse::NodeNotFound => (
+                "node not found",
+                String::from("The specified node was not found"),
+            ),
         };
 
         let json_body = serde_json::json!({

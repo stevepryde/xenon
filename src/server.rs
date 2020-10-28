@@ -1,10 +1,13 @@
-use crate::browser::{BrowserConfig, W3CCapabilities};
+use crate::browser::{BrowserConfig, Capabilities, W3CCapabilities};
 use crate::config::{load_config, XenonConfig};
 use crate::error::{XenonError, XenonResult};
 use crate::nodes::{NodeId, RemoteNode, RemoteNodeCreate};
 use crate::response::XenonResponse;
+use crate::service::{ServiceGroup, WebDriverService};
 use crate::session::{Session, XenonSessionId};
 use crate::state::XenonState;
+use hyper::http::uri::{Authority, Scheme};
+use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use log::*;
@@ -58,14 +61,16 @@ pub async fn start_server() -> XenonResult<()> {
     });
 
     // And a MakeService to handle each connection...
-    let make_service = make_service_fn(move |_conn| {
+    let make_service = make_service_fn(move |conn: &AddrStream| {
         // Clone state.
         let state = state.clone();
+        let remote_addr = conn.remote_addr();
         async move {
             let state = state.clone();
+            let remote_addr = remote_addr.clone();
             Ok::<_, Infallible>(service_fn(move |req| {
                 let state = state.clone();
-                handle(req, state)
+                handle(req, remote_addr.clone(), state)
             }))
         }
     });
@@ -88,6 +93,7 @@ pub async fn start_server() -> XenonResult<()> {
 
 async fn handle(
     req: Request<Body>,
+    remote_addr: SocketAddr,
     state: Arc<RwLock<XenonState>>,
 ) -> Result<Response<Body>, Infallible> {
     let top_level_path: &str = req
@@ -103,7 +109,7 @@ async fn handle(
         x if x.is_empty() => Ok(Response::new(Body::from("TODO: show status page"))),
         "session" => handle_session(req, state, false).await,
         "wd" => handle_session(req, state, true).await,
-        "node" => handle_node(req, state).await,
+        "node" => handle_node(req, remote_addr, state).await,
         p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
             p.to_string(),
         ))),
@@ -162,8 +168,47 @@ async fn handle_session(
         0 => unreachable!(),
         1 => match *req.method() {
             hyper::Method::POST => {
-                // TODO: if no matching browser, also check nodes.
-                handle_create_session(req, state).await
+                // Create session.
+                let body_bytes = hyper::body::to_bytes(req).await.map_err(|e| {
+                    XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+                })?;
+
+                let w3c_capabilities: W3CCapabilities = serde_json::from_slice(&body_bytes)
+                    .map_err(|e| {
+                        XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+                    })?;
+                info!("Request new session :: {:#?}", &w3c_capabilities);
+                let capabilities: Capabilities =
+                    serde_json::from_value(w3c_capabilities.capabilities.clone()).map_err(|e| {
+                        XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
+                    })?;
+
+                match handle_create_session(&capabilities, &w3c_capabilities, state.clone()).await {
+                    Ok(x) => Ok(x),
+                    Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable)) => {
+                        // In this case there is at least 1 matching browser locally, so even if
+                        // the node search returns no matching browser, the no matching sessions
+                        // error takes precedence.
+                        match handle_create_session_node(
+                            &capabilities,
+                            &w3c_capabilities,
+                            state.clone(),
+                        )
+                        .await
+                        {
+                            Ok(x) => Ok(x),
+                            Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser)) => {
+                                Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable))
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser)) => {
+                        handle_create_session_node(&capabilities, &w3c_capabilities, state.clone())
+                            .await
+                    }
+                    Err(e) => Err(e),
+                }
             }
             _ => Err(XenonError::RespondWith(XenonResponse::MethodNotFound(
                 path_elements.join("/"),
@@ -216,16 +261,18 @@ async fn handle_session(
                     s.delete_session(&xsession_id);
                 }
 
-                // Remove the session reference under read-lock on state and write-lock on
-                // service group. The service may self-destruct if this was the last connection
-                // to it.
-                {
+                // For local sessions, remove the session from its service group.
+                if let Some(session_group) = session.service_group() {
+                    // Remove the session reference under read-lock on state and write-lock on
+                    // service group. The service may self-destruct if this was the last connection
+                    // to it.
                     let s = state.read().await;
                     let rwlock_groups = s.service_groups();
                     let rwlock_port_manager = s.port_manager();
                     let (mut port_manager, mut groups) =
                         tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
-                    if let Some(group) = groups.get_mut(&session.service_group().to_string()) {
+
+                    if let Some(group) = groups.get_mut(session_group) {
                         group.delete_session(session.port(), &xsession_id, &mut port_manager);
                     }
                 }
@@ -237,77 +284,27 @@ async fn handle_session(
 }
 
 pub async fn handle_create_session(
-    req: Request<Body>,
+    capabilities: &Capabilities,
+    w3c_capabilities: &W3CCapabilities,
     state: Arc<RwLock<XenonState>>,
 ) -> XenonResult<Response<Body>> {
-    let body_bytes = hyper::body::to_bytes(req)
-        .await
-        .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
-
-    // NOTE: Capabilities are ONLY used to match within Xenon. They are not sent to the
-    //       target webdriver.
-    let w3c_capabilities: W3CCapabilities = serde_json::from_slice(&body_bytes)
-        .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
-    info!("Request new session :: {:#?}", &w3c_capabilities);
-    let capabilities = serde_json::from_value(w3c_capabilities.capabilities.clone())
-        .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
-
-    let (xsession_id, port, group_name) = {
-        let s = state.read().await;
-        let rwlock_groups = s.service_groups();
-
-        // We can do the capability matching under a read lock.
-        let group_name = {
-            let groups = rwlock_groups.read().await;
-
-            let group = match groups
-                .values()
-                .find(|v| v.matches_capabilities(&capabilities))
-            {
-                Some(x) => x,
-                None => {
-                    return Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser));
-                }
-            };
-
-            // Found a service group. Do we have capacity for a new session?
-            // Note that this is a preliminary check only and is not a guarantee.
-            // We use this to return early if there are no sessions available,
-            // but even if this suggests we have capacity we still need to
-            // check again while holding a write lock on service_groups.
-            if !group.has_capacity() {
-                return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
-            }
-
-            group.name().to_string()
-        };
-
-        // Now we get a write lock to add the new session/service.
-        let rwlock_port_manager = s.port_manager();
-        let (mut port_manager, mut groups) =
-            tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
-
-        let group = match groups.get_mut(&group_name) {
-            Some(g) => g,
-            None => {
-                return Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser));
-            }
-        };
-
-        // This only holds a write lock on the port manager and service groups,
-        // so it only blocks the creation or deletion of other services or sessions.
-        // This will not block any in-progress sessions.
-        let service = group.get_or_start_service(&mut port_manager).await?;
-        let xsession_id = XenonSessionId::new();
-        service.add_session(xsession_id.clone());
-        (xsession_id, service.port(), group_name)
-    };
+    let (xsession_id, port, group_name) =
+        reserve_available_session(state.clone(), capabilities).await?;
 
     // Create the session. No locks are held at all here.
     info!("Session Create {:?} :: port {}", xsession_id, port);
+    let authority: Authority = match format!("localhost:{}", port).parse() {
+        Ok(a) => a,
+        Err(e) => {
+            return Err(XenonError::RespondWith(
+                XenonResponse::ErrorCreatingSession(format!("Invalid port '{}': {}", port, e)),
+            ));
+        }
+    };
     match Session::create(
-        port,
-        &group_name,
+        Scheme::HTTP,
+        authority,
+        Some(group_name.clone()),
         &w3c_capabilities.capabilities,
         &w3c_capabilities.desired_capabilities,
         xsession_id.clone(),
@@ -348,6 +345,115 @@ pub async fn handle_create_session(
     }
 }
 
+pub async fn reserve_available_session(
+    state: Arc<RwLock<XenonState>>,
+    capabilities: &Capabilities,
+) -> XenonResult<(XenonSessionId, u16, String)> {
+    let s = state.read().await;
+    let rwlock_groups = s.service_groups();
+
+    // We can do the capability matching under a read lock.
+    let group_names = {
+        let groups = rwlock_groups.read().await;
+
+        let matching_groups: Vec<&ServiceGroup> = groups
+            .values()
+            .filter(|v| v.matches_capabilities(capabilities))
+            .collect();
+        if matching_groups.is_empty() {
+            return Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser));
+        }
+
+        let matching_group_names: Vec<String> = matching_groups
+            .iter()
+            .filter(|v| v.has_capacity())
+            .map(|v| v.name().to_string())
+            .collect();
+        if matching_group_names.is_empty() {
+            return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
+        }
+
+        matching_group_names
+    };
+
+    // Now we get a write lock to add the new session/service.
+    // This only holds a write lock on the port manager and service groups,
+    // so it only blocks the creation or deletion of other services or sessions.
+    // This will not block any in-progress sessions.
+    let rwlock_port_manager = s.port_manager();
+    let (mut port_manager, mut groups) =
+        tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
+
+    // Note that a new session request might match several groups.
+    // If any session fails to start, fallback to the next available group.
+    let mut first_error: Option<XenonError> = None;
+    for group_name in group_names {
+        let group = groups.get_mut(&group_name).unwrap();
+
+        match group.get_or_start_service(&mut port_manager).await {
+            Ok(service) => {
+                let xsession_id = XenonSessionId::new();
+                service.add_session(xsession_id.clone());
+                return Ok((xsession_id, service.port(), group_name));
+            }
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+    }
+
+    Err(first_error.unwrap_or(XenonError::RespondWith(XenonResponse::NoSessionsAvailable)))
+}
+
+pub async fn handle_create_session_node(
+    capabilities: &Capabilities,
+    w3c_capabilities: &W3CCapabilities,
+    state: Arc<RwLock<XenonState>>,
+) -> XenonResult<Response<Body>> {
+    let s = state.read().await;
+    let rwlock_nodes = s.remote_nodes();
+    let nodes = rwlock_nodes.read().await;
+
+    let xsession_id = XenonSessionId::new();
+    let mut matched_caps = false;
+    for node in nodes.values() {
+        for group in &node.service_groups {
+            if group.browser.matches_capabilities(capabilities) {
+                matched_caps = true;
+                info!(
+                    "Attempt Session Create {:?} :: Node {}",
+                    xsession_id,
+                    node.display_name()
+                );
+                if let Ok((session, response)) = Session::create(
+                    node.scheme.clone(),
+                    node.authority.clone(),
+                    None,
+                    &w3c_capabilities.capabilities,
+                    &w3c_capabilities.desired_capabilities,
+                    xsession_id.clone(),
+                )
+                .await
+                {
+                    // Add session to pool.
+                    let mut s = state.write().await;
+                    s.add_session(xsession_id, session);
+                    // Forward the response back to the client.
+                    return Ok(response);
+                }
+            }
+        }
+    }
+
+    if matched_caps {
+        Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable))
+    } else {
+        Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser))
+    }
+}
+
 async fn process_session_timeout(
     state: Arc<RwLock<XenonState>>,
     mut rx: tokio::sync::oneshot::Receiver<bool>,
@@ -374,8 +480,10 @@ async fn process_session_timeout(
                         xsession_id,
                         session.port()
                     );
-                    if let Some(group) = groups.get_mut(session.service_group()) {
-                        group.delete_session(session.port(), &xsession_id, &mut port_manager);
+                    if let Some(session_group) = session.service_group() {
+                        if let Some(group) = groups.get_mut(session_group) {
+                            group.delete_session(session.port(), &xsession_id, &mut port_manager);
+                        }
                     }
                 }
             }
@@ -386,6 +494,7 @@ async fn process_session_timeout(
 
 async fn handle_node(
     req: Request<Body>,
+    _remote_addr: SocketAddr,
     state: Arc<RwLock<XenonState>>,
 ) -> XenonResult<Response<Body>> {
     let path_elements: Vec<String> = req
@@ -408,10 +517,11 @@ async fn handle_node(
 
     match path_elements[1].as_str() {
         "register" => {
-            let node_info: RemoteNodeCreate = serde_json::from_slice(&body_bytes).map_err(|e| {
-                XenonError::RespondWith(XenonResponse::ErrorRegisteringNode(e.to_string()))
-            })?;
-            let node = RemoteNode::new(node_info);
+            let node_create_info: RemoteNodeCreate =
+                serde_json::from_slice(&body_bytes).map_err(|e| {
+                    XenonError::RespondWith(XenonResponse::ErrorRegisteringNode(e.to_string()))
+                })?;
+            let node = RemoteNode::new(node_create_info)?;
 
             let s = state.read().await;
             let rwlock_nodes = s.remote_nodes();
