@@ -8,7 +8,9 @@ use std::path::Path;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct XenonConfig {
+    #[serde(default)]
     browsers: Vec<BrowserConfig>,
+    #[serde(default)]
     ports: Vec<String>,
     #[serde(default)]
     nodes: Vec<RemoteNodeCreate>,

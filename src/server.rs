@@ -114,6 +114,8 @@ async fn handle(
         .next()
         .unwrap_or_else(|| "");
 
+    info!("{} {}", req.method(), req.uri());
+
     // Routing for top-level path.
     let result = match top_level_path {
         x if x.is_empty() => Ok(Response::new(Body::from("TODO: show status page"))),
@@ -251,12 +253,6 @@ async fn handle_session(
             };
 
             let remaining_path: String = path_elements[2..].join("/");
-            info!(
-                "Session {:?} :: {} {}",
-                xsession_id,
-                req.method(),
-                remaining_path
-            );
             let mut session = mutex_session.lock().await;
             let response = session.forward_request(req, &remaining_path).await?;
 
@@ -551,6 +547,14 @@ async fn handle_node(
                         remaining_sessions: group.browser.max_sessions(),
                     };
                     groups_out.push(remote_group);
+                }
+
+                // Also expose remote nodes.
+                let rwlock_nodes = s.remote_nodes();
+                for node in rwlock_nodes.read().await.values() {
+                    for remote_group in &node.service_groups {
+                        groups_out.push(remote_group.clone());
+                    }
                 }
 
                 let body = Body::from(
