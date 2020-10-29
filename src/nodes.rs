@@ -28,7 +28,7 @@ impl NodeId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteServiceGroup {
     pub browser: BrowserConfig,
     pub remaining_sessions: u32,
@@ -39,6 +39,7 @@ pub struct RemoteNodeCreate {
     #[serde(default)]
     name: String,
     url: String,
+    #[serde(default)]
     service_groups: Vec<RemoteServiceGroup>,
 }
 
@@ -61,11 +62,11 @@ fn default_authority() -> Authority {
     "localhost:8888".parse().unwrap()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteNode {
     id: NodeId,
     name: String,
-    url: String,
+    pub url: String,
     comms_id: u128,
     pub service_groups: Vec<RemoteServiceGroup>,
     #[serde(skip, default = "default_scheme")]
@@ -77,7 +78,7 @@ pub struct RemoteNode {
 impl RemoteNode {
     pub fn new(node_info: RemoteNodeCreate) -> XenonResult<Self> {
         let (scheme, authority) = parse_url(&node_info.url).ok_or_else(|| {
-            XenonError::RespondWith(XenonResponse::ErrorRegisteringNode(format!(
+            XenonError::RespondWith(XenonResponse::ErrorCreatingNode(format!(
                 "Error parsing url for remote node: {}",
                 node_info.url
             )))
@@ -103,26 +104,6 @@ impl RemoteNode {
             self.id.to_string()
         } else {
             format!("{} ({})", self.name, self.id)
-        }
-    }
-
-    pub fn update(&mut self, node: RemoteNode) -> XenonResult<bool> {
-        // Avoid races due to network latency. Most recent update must apply.
-        if node.comms_id > self.comms_id {
-            let (scheme, authority) = parse_url(&node.url).ok_or_else(|| {
-                XenonError::RespondWith(XenonResponse::ErrorUpdatingNode(format!(
-                    "Error parsing url for remote node: {}",
-                    node.url
-                )))
-            })?;
-            self.scheme = scheme;
-            self.authority = authority;
-            self.name = node.name;
-            self.service_groups = node.service_groups;
-            self.comms_id = node.comms_id;
-            Ok(true)
-        } else {
-            Ok(false)
         }
     }
 }

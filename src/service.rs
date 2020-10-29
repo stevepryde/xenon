@@ -85,7 +85,7 @@ pub type ServiceGroupName = String;
 /// connection, up to the max_sessions limit in the BrowserConfig struct.
 #[derive(Debug)]
 pub struct ServiceGroup {
-    browser: BrowserConfig,
+    pub browser: BrowserConfig,
     services: HashMap<ServicePort, WebDriverService>,
 }
 

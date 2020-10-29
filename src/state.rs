@@ -1,4 +1,5 @@
 use crate::config::XenonConfig;
+use crate::error::XenonResult;
 use crate::nodes::{NodeId, RemoteNode};
 use crate::portmanager::PortManager;
 use crate::service::{ServiceGroup, ServiceGroupName};
@@ -39,20 +40,26 @@ pub struct XenonState {
 }
 
 impl XenonState {
-    pub fn new(config: XenonConfig) -> Self {
+    pub fn new(config: XenonConfig) -> XenonResult<Self> {
         let port_manager = PortManager::new(&config);
         let mut service_groups = IndexMap::new();
-        for browser in config.browsers() {
+        let (browsers, node_data_list) = config.browsers_and_nodes();
+        for browser in browsers {
             let group = ServiceGroup::new(browser);
             service_groups.insert(group.name().to_string(), group);
         }
+        let mut nodes = IndexMap::new();
+        for node_data in node_data_list {
+            let node = RemoteNode::new(node_data)?;
+            nodes.insert(node.id(), node);
+        }
 
-        Self {
+        Ok(Self {
             service_groups: Arc::new(RwLock::new(service_groups)),
             port_manager: Arc::new(RwLock::new(port_manager)),
             sessions: HashMap::new(),
-            remote_nodes: Arc::new(RwLock::new(IndexMap::new())),
-        }
+            remote_nodes: Arc::new(RwLock::new(nodes)),
+        })
     }
 
     pub fn port_manager(&self) -> Arc<RwLock<PortManager>> {

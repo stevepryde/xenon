@@ -1,5 +1,6 @@
 use crate::browser::BrowserConfig;
 use crate::error::XenonError;
+use crate::nodes::RemoteNodeCreate;
 use crate::portmanager::ServicePort;
 use log::*;
 use serde::Deserialize;
@@ -9,6 +10,8 @@ use std::path::Path;
 pub struct XenonConfig {
     browsers: Vec<BrowserConfig>,
     ports: Vec<String>,
+    #[serde(default)]
+    nodes: Vec<RemoteNodeCreate>,
 }
 
 impl XenonConfig {
@@ -29,9 +32,13 @@ impl XenonConfig {
         port_list
     }
 
+    pub fn has_nodes(&self) -> bool {
+        !self.nodes.is_empty()
+    }
+
     /// Get the list of browsers and consume the config.
-    pub fn browsers(self) -> Vec<BrowserConfig> {
-        self.browsers
+    pub fn browsers_and_nodes(self) -> (Vec<BrowserConfig>, Vec<RemoteNodeCreate>) {
+        (self.browsers, self.nodes)
     }
 }
 

@@ -6,9 +6,9 @@ use std::sync::Arc;
 use hyper::http::uri::{Authority, Scheme};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response, Server, StatusCode};
+use hyper::{Body, Client, Request, Response, Server, StatusCode};
 use log::*;
-use serde::Serialize;
+
 use structopt::StructOpt;
 use tokio::sync::RwLock;
 use tokio::time::{delay_for, Duration};
@@ -16,11 +16,12 @@ use tokio::time::{delay_for, Duration};
 use crate::browser::{Capabilities, W3CCapabilities};
 use crate::config::load_config;
 use crate::error::{XenonError, XenonResult};
-use crate::nodes::{NodeId, RemoteNode, RemoteNodeCreate};
+use crate::nodes::{NodeId, RemoteNode, RemoteServiceGroup};
 use crate::response::XenonResponse;
 use crate::service::ServiceGroup;
 use crate::session::{Session, XenonSessionId};
 use crate::state::XenonState;
+use indexmap::map::IndexMap;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "Xenon", about = "A powerful WebDriver proxy")]
@@ -51,7 +52,8 @@ pub async fn start_server() -> XenonResult<()> {
     let config_filename = opt.cfg.unwrap_or_else(|| PathBuf::from("xenon.yml"));
     let config = load_config(&config_filename)?;
     debug!("Config loaded:\n{:#?}", config);
-    let state = Arc::new(RwLock::new(XenonState::new(config)));
+    let using_nodes = config.has_nodes();
+    let state = Arc::new(RwLock::new(XenonState::new(config)?));
 
     let (tx_terminator, rx_terminator) = tokio::sync::oneshot::channel();
 
@@ -60,6 +62,13 @@ pub async fn start_server() -> XenonResult<()> {
     tokio::spawn(async move {
         process_session_timeout(state_clone, rx_terminator).await;
     });
+    if using_nodes {
+        // Spawn config getter.
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            process_node_init(state_clone).await;
+        });
+    }
 
     // And a MakeService to handle each connection...
     let make_service = make_service_fn(move |conn: &AddrStream| {
@@ -111,6 +120,7 @@ async fn handle(
         "session" => handle_session(req, state, false).await,
         "wd" => handle_session(req, state, true).await,
         "node" => handle_node(req, remote_addr, state).await,
+        "status" => Ok(Response::builder().status(200).body("OK".into()).unwrap()),
         p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
             p.to_string(),
         ))),
@@ -413,38 +423,52 @@ pub async fn handle_create_session_node(
     w3c_capabilities: &W3CCapabilities,
     state: Arc<RwLock<XenonState>>,
 ) -> XenonResult<Response<Body>> {
-    let s = state.read().await;
-    let rwlock_nodes = s.remote_nodes();
-    let nodes = rwlock_nodes.read().await;
-
-    let xsession_id = XenonSessionId::new();
-    let mut matched_caps = false;
-    for node in nodes.values() {
-        for group in &node.service_groups {
-            if group.browser.matches_capabilities(capabilities) && group.remaining_sessions > 0 {
-                matched_caps = true;
-                info!(
-                    "Attempt Session Create {:?} :: Node {}",
-                    xsession_id,
-                    node.display_name()
-                );
-                if let Ok((session, response)) = Session::create(
-                    node.scheme.clone(),
-                    node.authority.clone(),
-                    None,
-                    &w3c_capabilities.capabilities,
-                    &w3c_capabilities.desired_capabilities,
-                    xsession_id.clone(),
-                )
-                .await
-                {
-                    // Add session to pool.
-                    let mut s = state.write().await;
-                    s.add_session(xsession_id, session);
-                    // Forward the response back to the client.
-                    return Ok(response);
+    // Note we need to get the node data under read lock but we need to give that up
+    // asap because we need a write lock later once a session is created.
+    let (node_data, matched_caps) = {
+        let s = state.read().await;
+        let rwlock_nodes = s.remote_nodes();
+        let nodes = rwlock_nodes.read().await;
+        let mut node_data = Vec::new();
+        let mut matched_caps = false;
+        for node in nodes.values() {
+            for group in &node.service_groups {
+                if group.browser.matches_capabilities(capabilities) {
+                    matched_caps = true;
+                    if group.remaining_sessions > 0 {
+                        node_data.push((
+                            node.display_name(),
+                            node.scheme.clone(),
+                            node.authority.clone(),
+                        ));
+                    }
                 }
             }
+        }
+        (node_data, matched_caps)
+    };
+
+    let xsession_id = XenonSessionId::new();
+    for (name, scheme, authority) in node_data {
+        info!(
+            "Attempt Session Create {:?} :: Node '{}'",
+            xsession_id, name
+        );
+        if let Ok((session, response)) = Session::create(
+            scheme,
+            authority,
+            None,
+            &w3c_capabilities.capabilities,
+            &w3c_capabilities.desired_capabilities,
+            xsession_id.clone(),
+        )
+        .await
+        {
+            // Add session to pool. Write lock here.
+            let mut s = state.write().await;
+            s.add_session(xsession_id, session);
+            // Forward the response back to the client.
+            return Ok(response);
         }
     }
 
@@ -493,6 +517,7 @@ async fn process_session_timeout(
     }
 }
 
+/// Handle requests to /node endpoints.
 async fn handle_node(
     req: Request<Body>,
     _remote_addr: SocketAddr,
@@ -512,120 +537,144 @@ async fn handle_node(
         )));
     }
 
-    let body_bytes = hyper::body::to_bytes(req)
-        .await
-        .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
-
     match path_elements[1].as_str() {
-        "register" => {
-            let node_create_info: RemoteNodeCreate =
-                serde_json::from_slice(&body_bytes).map_err(|e| {
-                    XenonError::RespondWith(XenonResponse::ErrorRegisteringNode(e.to_string()))
-                })?;
-            let node = RemoteNode::new(node_create_info)?;
-
-            let s = state.read().await;
-            let rwlock_nodes = s.remote_nodes();
-            let mut nodes = rwlock_nodes.write().await;
-            let node_id = node.id();
-            nodes.insert(node.id(), node);
-
-            #[derive(Debug, Serialize)]
-            #[serde(rename_all = "camelCase")]
-            struct RegisterNodeResponse {
-                node_id: String,
-            }
-
-            let data = RegisterNodeResponse {
-                node_id: node_id.to_string(),
-            };
-            let body = Body::from(
-                serde_json::to_string(&data)
-                    .unwrap_or_else(|e| format!("Xenon failed to serialize node id: {}", e)),
-            );
-
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(body)
-                .unwrap_or_else(|_| {
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Xenon failed to serialize node id"))
-                        .unwrap()
-                }))
-        }
-        "update" => {
-            let node: RemoteNode = serde_json::from_slice(&body_bytes).map_err(|e| {
-                XenonError::RespondWith(XenonResponse::ErrorUpdatingNode(e.to_string()))
-            })?;
-
-            let found = {
+        "config" => match *req.method() {
+            hyper::Method::GET => {
+                // GET /node/config
                 let s = state.read().await;
-                let rwlock_nodes = s.remote_nodes();
-                let nodes = rwlock_nodes.read().await;
-                nodes.contains_key(&node.id())
-            };
+                let rwlock_groups = s.service_groups();
 
-            if !found {
-                return Err(XenonError::RespondWith(XenonResponse::NodeNotFound));
-            }
-
-            let s = state.read().await;
-            let rwlock_nodes = s.remote_nodes();
-            let mut nodes = rwlock_nodes.write().await;
-            match nodes.get_mut(&node.id()) {
-                Some(n) => {
-                    n.update(node)?;
-
-                    Ok(Response::builder()
-                        .status(StatusCode::NO_CONTENT)
-                        .body(Body::from(String::from("OK")))
-                        .unwrap_or_else(|_| {
-                            Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(Body::from("Xenon failed to serialize node id"))
-                                .unwrap()
-                        }))
+                let mut groups_out = Vec::new();
+                for group in rwlock_groups.read().await.values() {
+                    let remote_group = RemoteServiceGroup {
+                        browser: group.browser.clone(),
+                        remaining_sessions: group.browser.max_sessions(),
+                    };
+                    groups_out.push(remote_group);
                 }
-                None => Err(XenonError::RespondWith(XenonResponse::NodeNotFound)),
-            }
-        }
-        "deregister" => {
-            let node_id: NodeId = serde_json::from_slice(&body_bytes).map_err(|e| {
-                XenonError::RespondWith(XenonResponse::ErrorDeregisteringNode(e.to_string()))
-            })?;
 
-            let s = state.read().await;
-            let rwlock_nodes = s.remote_nodes();
-            let mut nodes = rwlock_nodes.write().await;
-            match nodes.remove(&node_id) {
-                Some(_n) => {
-                    // TODO: Delete any sessions for this node.
+                let body = Body::from(
+                    serde_json::to_string(&groups_out)
+                        .unwrap_or_else(|e| format!("Xenon failed to serialize node id: {}", e)),
+                );
 
-                    Ok(Response::builder()
-                        .status(StatusCode::NO_CONTENT)
-                        .body(Body::from(String::from("OK")))
-                        .unwrap_or_else(|_| {
-                            Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(Body::from("Xenon failed to serialize node id"))
-                                .unwrap()
-                        }))
-                }
-                None => Err(XenonError::RespondWith(XenonResponse::NodeNotFound)),
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .body(body)
+                    .unwrap_or_else(|_| {
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Body::from("Xenon failed to serialize node configuration"))
+                            .unwrap()
+                    }))
             }
-        }
+            _ => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
+                path_elements.join("/"),
+            ))),
+        },
         _p => Err(XenonError::RespondWith(XenonResponse::EndpointNotFound(
             path_elements.join("/"),
         ))),
     }
-    // TODO: support node commands:
+}
 
-    // Considerations:
-    // Remote node sessions should be able to timeout here. If we timeout, kill the remote session as if it were a webdriver.
-    // If a remote session returns an error, delete it and return the error.
-    // When creating/deleting a session, if we're a node, send a /node/update to the hub.
-    // Capture Ctrl+C and send disconnect to the hub.
-    // Connect to hub on startup. Keep trying connection in background until successful.
-    // Allow node to specify its ip in config. If not specified, auto-detect it.
+/// Fetch config for each node.
+async fn process_node_init(state: Arc<RwLock<XenonState>>) {
+    debug!("Downstream node configuration starting");
+    let mut nodes_remaining: IndexMap<NodeId, RemoteNode> = {
+        let s = state.read().await;
+        let rwlock_nodes = s.remote_nodes();
+        let nodes = rwlock_nodes.read().await.clone();
+        nodes
+    };
+
+    let client = Client::new();
+
+    while !nodes_remaining.is_empty() {
+        let mut nodes_done = Vec::new();
+        for node in nodes_remaining.values() {
+            debug!(
+                "Fetching config from downstream node '{}'...",
+                node.display_name()
+            );
+            let uri_out = match hyper::Uri::builder()
+                .scheme(node.scheme.clone())
+                .authority(node.authority.clone())
+                .path_and_query("/node/config")
+                .build()
+            {
+                Ok(uri) => uri,
+                Err(e) => {
+                    error!(
+                        "Invalid URI '{}' for node '{}': {}",
+                        node.url,
+                        node.display_name(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            match client.get(uri_out).await {
+                Ok(res) => match hyper::body::to_bytes(res).await {
+                    Ok(bytes) => {
+                        let remote_groups: Vec<RemoteServiceGroup> =
+                            match serde_json::from_slice(&bytes) {
+                                Ok(x) => x,
+                                Err(e) => {
+                                    error!(
+                                        "Failed to parse configuration from node '{}': {}",
+                                        node.display_name(),
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+
+                        // Update these. This requires a write lock but only briefly.
+                        let s = state.write().await;
+                        let rwlock_nodes = s.remote_nodes();
+                        let mut nodes = rwlock_nodes.write().await;
+                        if let Some(node) = nodes.get_mut(&node.id()) {
+                            node.service_groups = remote_groups.clone();
+                        }
+                        info!(
+                            "Configuration for downstream node '{}' fetched successfully",
+                            node.display_name()
+                        );
+                        info!("{:#?}", remote_groups);
+                        nodes_done.push(node.id());
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to receive configuration for node '{}': {}",
+                            node.display_name(),
+                            e
+                        );
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        "Unable to fetch configuration for node '{}': {}",
+                        node.display_name(),
+                        e
+                    );
+                    continue;
+                }
+            }
+        }
+
+        // Remove the ones we found.
+        for node_id in nodes_done {
+            nodes_remaining.remove(&node_id);
+        }
+
+        if !nodes_remaining.is_empty() {
+            // Wait 60 seconds before trying again.
+            delay_for(Duration::new(60, 0)).await;
+        }
+    }
+
+    debug!("Downstream node configuration complete");
 }
