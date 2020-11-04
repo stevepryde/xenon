@@ -47,7 +47,7 @@ fn parse_url(url: &str) -> Option<(Scheme, Authority)> {
     match url.parse::<Uri>() {
         Ok(uri) => {
             let scheme = uri.scheme().cloned().unwrap_or(Scheme::HTTP);
-            let authority = uri.authority().cloned().unwrap_or(default_authority());
+            let authority = uri.authority().cloned().unwrap_or_else(default_authority);
             Some((scheme, authority))
         }
         Err(_) => None,

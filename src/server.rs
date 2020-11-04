@@ -77,10 +77,10 @@ pub async fn start_server() -> XenonResult<()> {
         let remote_addr = conn.remote_addr();
         async move {
             let state = state.clone();
-            let remote_addr = remote_addr.clone();
+            let remote_addr = remote_addr;
             Ok::<_, Infallible>(service_fn(move |req| {
                 let state = state.clone();
-                handle(req, remote_addr.clone(), state)
+                handle(req, remote_addr, state)
             }))
         }
     });
@@ -132,30 +132,13 @@ async fn handle(
         Ok(x) => Ok(x),
         Err(XenonError::RespondWith(r)) => {
             debug!("Xenon replied with error: {:#?}", r);
-            Ok(Response::builder()
-                .status(r.status())
-                .body(r.into())
-                .unwrap_or_else(|_| {
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Xenon failed to serialize an error"))
-                        .unwrap()
-                }))
+            Ok(r.into_response())
         }
         Err(e) => {
             // Coerce all errors into WebDriver-compatible response.
             error!("Internal Error: {:#?}", e);
             let r = XenonResponse::InternalServerError(e.to_string());
-
-            Ok(Response::builder()
-                .status(r.status())
-                .body(r.into())
-                .unwrap_or_else(|_| {
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Xenon failed to serialize an error"))
-                        .unwrap()
-                }))
+            Ok(r.into_response())
         }
     }
 }
@@ -635,8 +618,8 @@ async fn process_node_init(state: Arc<RwLock<XenonState>>) {
                                 }
                             };
 
-                        // Update these. This requires a write lock but only briefly.
-                        let s = state.write().await;
+                        // Update these. Read lock on state. Write lock on nodes.
+                        let s = state.read().await;
                         let rwlock_nodes = s.remote_nodes();
                         let mut nodes = rwlock_nodes.write().await;
                         if let Some(node) = nodes.get_mut(&node.id()) {

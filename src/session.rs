@@ -90,7 +90,7 @@ impl Session {
             Some(p) => p,
             None => {
                 return Err(XenonError::RespondWith(
-                    XenonResponse::ErrorCreatingSession(format!("Port not recognised")),
+                    XenonResponse::ErrorCreatingSession("Port not recognised".to_string()),
                 ))
             }
         };

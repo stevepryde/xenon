@@ -1,4 +1,4 @@
-use hyper::{Body, StatusCode};
+use hyper::{Body, Response, StatusCode};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -25,6 +25,18 @@ impl XenonResponse {
             }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
+    }
+
+    pub fn into_response(self) -> Response<Body> {
+        Response::builder()
+            .status(self.status())
+            .body(self.into())
+            .unwrap_or_else(|_| {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Xenon failed to serialize an error"))
+                    .unwrap()
+            })
     }
 }
 
