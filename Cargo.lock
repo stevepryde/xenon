@@ -954,7 +954,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xenon"
+name = "xenon-webdriver"
 version = "0.4.0"
 dependencies = [
  "bytes",
