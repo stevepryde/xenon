@@ -2,7 +2,7 @@
 
 Xenon is a WebDriver proxy, for running multiple WebDriver sessions through a single hub.
 
-This makes it effectively a drop-in alternative to Selenium Server (Grid features not yet supported).
+This makes it effectively a drop-in alternative to Selenium Server (including standalone or grid).
 
 ## Purpose
 
@@ -24,19 +24,12 @@ It is built on top of async-await, tokio, and hyper.
 ## Status
 
 This project is still in early stages, however it is already functional as a
-drop-in replacement for Selenium Standalone. Grid-like functionality is planned
-for a future release.
+drop-in replacement for Selenium Standalone. Grid-like functionality is also
+supported.
 
-As of v0.2.0 Xenon is able to run the full [thirtyfour](https://github.com/stevepryde/thirtyfour)
+Xenon is able to run the full [thirtyfour](https://github.com/stevepryde/thirtyfour)
 (Rust WebDriver client) test suite using 10 Chrome instances concurrently,
 with no modification required to the test code.
-
-There is also a known issue with Xenon's error reporting. Currently Xenon will
-report all upstream errors "as is", which works fine, but any errors handled
-internally by Xenon will be reported to the client in a custom format, which
-the selenium/WebDriver client very likely will not understand. I plan to
-remedy this by coercing Xenon error codes and messages into a W3C WebDriver
-compatible error format (for example "session not found" etc).
 
 ## Getting Started
 
@@ -63,12 +56,26 @@ You can even add multiple chromedriver configs as long as each one has a
 different `name` (this will match against the `browserName` setting of your
 desired capabilities arguments in your WebDriver client).
 
+### Download and install Xenon
+
+You can install the binary directly from crates.io like this:
+
+    cargo install xenon-webdriver
+
+This will be installed for the current user.
+
+Alternatively you can build from source by cloning this repo and running:
+
+    cargo build --release
+
+If building from source, the binary will be at `./target/release/xenon-webdriver`.
+
 ### Run Xenon
 
-Now you can just start Xenon with no arguments. This assumes you have already
-compiled Xenon and have the `xenon` binary in the same directory as `xenon.yml`.
+Now you can just start Xenon with no arguments. This assumes you have the
+`xenon-webdriver` binary in the same directory as `xenon.yml`.
 
-    ./xenon
+    ./xenon-webdriver
 
 You should see something like this:
 
@@ -91,8 +98,46 @@ You should see something like this:
     [2020-05-23T13:55:34Z INFO  xenon::server] Server running at 127.0.0.1:4444
 
 You can now run your selenium/WebDriver tests and point them at 127.0.0.1:4444
-just as you normally would. Xenon also optionally supports running at the path
-/wd/hub for compatibility with tests that are set up to use selenium hub.
+just as you normally would. Xenon also optionally supports running at
+127.0.0.1:4444/wd/hub for compatibility with tests that are set up to use selenium hub.
+
+### Running multiple nodes
+
+Each Xenon server can act as a hub, node, or standalone server (or all of these at once).
+This functionality is enabled by default. There is no additional setup required.
+Another way to say this is that each Xenon server can support local browsers as well as
+defer to remote nodes (other Xenon servers) that can provide additional browsers.
+To use a Xenon server as a node, we just add that server's URL under the `nodes` section
+in the config for the server that will act as the hub, like this:
+
+"Hub" server configuration:
+
+    ---
+    nodes:
+      - name: node1
+        url: localhost:8888
+
+NOTE: The hub could also specify `browsers:` and `ports:` if you want to also run
+local browsers off the same hub.
+
+The "node" server configuration is the same as the standalone configuration (see above).
+
+However, the hub configuration assumes the node will be running on port 8888, so you
+would start the node like this:
+
+    ./xenon-webdriver --port 8888
+
+The node does not actually know it is serving requests from another Xenon server. Since
+Xenon behaves as a WebDriver proxy, we can just forward requests to any other Xenon
+server and it "just works". Well, almost. The one piece of information we need from the
+"node" is the list of browsers it provides in its configuration. This is requested by
+the hub automatically when it first starts up. Currently this requires that the node is
+online when the hub starts, but that requirement will be removed in a future release.
+
+In short, each Xenon server can provide local or remote browsers, or both. A "local"
+browser is where this server takes care of starting each WebDriver instance
+(chromedriver, geckodriver etc) and talks to it directly. A "remote" browser is just a
+"local" browser running on another Xenon server.
 
 ### Running under Xvfb for "headless" operation (Linux only)
 
@@ -103,7 +148,7 @@ inputs interfering with tests.
 To do this, just install Xvfb using your distro's package manager and then run:
 
     xvfb-run --server-args="-screen 0 1024x768x24" ./xenon
-    
+
 #### VNC output
 
 If you run Xvfb (as above) you can also get a live view by running a VNC
@@ -115,7 +160,7 @@ https://stackoverflow.com/questions/12050021/how-to-make-xvfb-display-visible
 
 - Support for forwarding requests from one Xenon server to another, including across a network.
 - Docker and Docker Compose
-    
+
 ## LICENSE
 
 This work is licensed under MIT.
