@@ -23,9 +23,10 @@ It is built on top of async-await, tokio, and hyper.
 
 ## Status
 
-This project is still in early stages, however it is already functional as a
-drop-in replacement for Selenium Standalone. Grid-like functionality is also
-supported.
+Xenon currently works as a drop-in replacement for Selenium Standalone in most cases,
+although 100% feature parity with Selenium is not a goal of Xenon.
+
+Grid-like functionality is also supported (see "Running multiple nodes" below).
 
 Xenon is able to run the full [thirtyfour](https://github.com/stevepryde/thirtyfour)
 (Rust WebDriver client) test suite using 10 Chrome instances concurrently,
@@ -101,10 +102,9 @@ You can now run your selenium/WebDriver tests and point them at 127.0.0.1:4444
 just as you normally would. Xenon also optionally supports running at
 127.0.0.1:4444/wd/hub for compatibility with tests that are set up to use selenium hub.
 
-### Running multiple nodes
+### Running multiple nodes (i.e. Grid functionality)
 
 Each Xenon server can act as a hub, node, or standalone server (or all of these at once).
-This functionality is enabled by default. There is no additional setup required.
 Another way to say this is that each Xenon server can support local browsers as well as
 defer to remote nodes (other Xenon servers) that can provide additional browsers.
 To use a Xenon server as a node, we just add that server's URL under the `nodes` section
@@ -122,19 +122,20 @@ local browsers off the same hub.
 
 The "node" server configuration is the same as the standalone configuration (see above).
 
-However, the hub configuration assumes the node will be running on port 8888, so you
+However, this hub configuration assumes the node will be running on port 8888, so you
 would start the node like this:
 
     ./xenon-webdriver --port 8888
 
 The node does not actually know it is serving requests from another Xenon server. Since
 Xenon behaves as a WebDriver proxy, we can just forward requests to any other Xenon
-server and it "just works". Well, almost. The one piece of information we need from the
-"node" is the list of browsers it provides in its configuration. This is requested by
-the hub automatically when it first starts up. Currently this requires that the node is
-online when the hub starts, but that requirement will be removed in a future release.
+server and it "just works". There is one piece of information we need from the
+"node" and that is the list of browsers it provides in its configuration.
+This is requested by the hub automatically when it first starts up.
+The hub will poll the `/node/config` endpoint of each node every 60 seconds until a
+successful response is received. This allows the servers to be started in any order.
 
-In short, each Xenon server can provide local or remote browsers, or both. A "local"
+In summary, each Xenon server can provide local or remote browsers, or both. A "local"
 browser is where this server takes care of starting each WebDriver instance
 (chromedriver, geckodriver etc) and talks to it directly. A "remote" browser is just a
 "local" browser running on another Xenon server.
