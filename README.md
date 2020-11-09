@@ -1,4 +1,7 @@
-# Xenon
+[![Crates.io](https://img.shields.io/crates/v/xenon-webdriver.svg?style=for-the-badge)](https://crates.io/crates/xenon-webdriver)
+[![Build Status](https://img.shields.io/github/workflow/status/stevepryde/xenon/build-check/main?style=for-the-badge)](https://github.com/stevepryde/xenon/actions)
+
+# Xenon WebDriver
 
 Xenon is a WebDriver proxy, for running multiple WebDriver sessions through a single hub.
 
