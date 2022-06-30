@@ -43,11 +43,11 @@ impl WebDriverService {
         })
     }
 
-    pub fn terminate(mut self) {
+    pub async fn terminate(mut self) {
         assert!(self.sessions.is_empty());
 
         debug!("Terminate WebDriver on port {}", self.port);
-        if let Err(e) = self.process.kill() {
+        if let Err(e) = self.process.kill().await {
             // What to do? For now just log the error but let everything proceed.
             // TODO: Options:
             //       1. Ignore all such errors indefinitely (but still log them) <-- Current
@@ -168,7 +168,7 @@ impl ServiceGroup {
             .unwrap_or_else(|| panic!("No service for port '{}'", next_port)))
     }
 
-    pub fn delete_session(
+    pub async fn delete_session(
         &mut self,
         port: ServicePort,
         xsession_id: &XenonSessionId,
@@ -186,7 +186,7 @@ impl ServiceGroup {
 
         if should_terminate {
             if let Some(service) = self.services.remove(&port) {
-                service.terminate();
+                service.terminate().await;
                 port_manager.unlock_port(port);
             }
         }

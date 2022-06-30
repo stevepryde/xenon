@@ -1,6 +1,7 @@
 use crate::error::{XenonError, XenonResult};
 use crate::portmanager::ServicePort;
 use crate::response::XenonResponse;
+use bytes::Bytes;
 use hyper::client::HttpConnector;
 use hyper::http::uri::{Authority, Scheme};
 use hyper::{Body, Client, Request, Response};
@@ -122,7 +123,7 @@ impl Session {
                 "WebDriver not available on port {}. Will retry in 1 second...",
                 port
             );
-            tokio::time::delay_for(Duration::new(1, 0)).await;
+            tokio::time::sleep(Duration::new(1, 0)).await;
         }
 
         // Send capabilities to driver verbatim.
@@ -149,7 +150,7 @@ impl Session {
             return Err(XenonError::ResponsePassThrough(response));
         }
 
-        let body_bytes = hyper::body::to_bytes(response.body_mut())
+        let body_bytes: Bytes = hyper::body::to_bytes(response.body_mut())
             .await
             .map_err(|e| {
                 XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))

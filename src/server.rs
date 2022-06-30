@@ -5,13 +5,14 @@ use std::sync::Arc;
 
 use hyper::http::uri::{Authority, Scheme};
 use hyper::server::conn::AddrStream;
+use hyper::server::Server;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Client, Request, Response, Server, StatusCode};
+use hyper::{Body, Client, Request, Response, StatusCode};
 use log::*;
 
 use structopt::StructOpt;
 use tokio::sync::RwLock;
-use tokio::time::{delay_for, Duration};
+use tokio::time::{sleep, Duration};
 
 use crate::browser::{Capabilities, W3CCapabilities};
 use crate::config::load_config;
@@ -263,7 +264,9 @@ async fn handle_session(
                         tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
 
                     if let Some(group) = groups.get_mut(session_group) {
-                        group.delete_session(session.port(), &xsession_id, &mut port_manager);
+                        group
+                            .delete_session(session.port(), &xsession_id, &mut port_manager)
+                            .await;
                     }
                 }
             }
@@ -316,7 +319,9 @@ pub async fn handle_create_session(
             let (mut port_manager, mut groups) =
                 tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
             if let Some(group) = groups.get_mut(&group_name) {
-                group.delete_session(port, &xsession_id, &mut port_manager);
+                group
+                    .delete_session(port, &xsession_id, &mut port_manager)
+                    .await;
             }
             Ok(response)
         }
@@ -328,7 +333,9 @@ pub async fn handle_create_session(
             let (mut port_manager, mut groups) =
                 tokio::join!(rwlock_port_manager.write(), rwlock_groups.write());
             if let Some(group) = groups.get_mut(&group_name) {
-                group.delete_session(port, &xsession_id, &mut port_manager);
+                group
+                    .delete_session(port, &xsession_id, &mut port_manager)
+                    .await;
             }
             Err(e)
         }
@@ -486,13 +493,15 @@ async fn process_session_timeout(
                     );
                     if let Some(session_group) = session.service_group() {
                         if let Some(group) = groups.get_mut(session_group) {
-                            group.delete_session(session.port(), &xsession_id, &mut port_manager);
+                            group
+                                .delete_session(session.port(), &xsession_id, &mut port_manager)
+                                .await;
                         }
                     }
                 }
             }
         }
-        delay_for(Duration::new(60, 0)).await;
+        sleep(Duration::new(60, 0)).await;
     }
 }
 
@@ -659,7 +668,7 @@ async fn process_node_init(state: Arc<RwLock<XenonState>>) {
 
         if !nodes_remaining.is_empty() {
             // Wait 60 seconds before trying again.
-            delay_for(Duration::new(60, 0)).await;
+            sleep(Duration::new(60, 0)).await;
         }
     }
 

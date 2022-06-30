@@ -1,11 +1,10 @@
 use crate::response::XenonResponse;
 use hyper::{Body, Response};
 use std::path::PathBuf;
-use thiserror::Error;
 
 pub type XenonResult<T> = Result<T, XenonError>;
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum XenonError {
     #[error("Invalid port specified")]
     InvalidPort,

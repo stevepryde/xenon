@@ -14,7 +14,7 @@ mod state;
 
 #[tokio::main]
 async fn main() {
-    env_logger::from_env(Env::default().default_filter_or("xenon=debug")).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("xenon=debug")).init();
 
     if let Err(e) = start_server().await {
         println!("Xenon server stopped.\nERROR: {:?}", e);
