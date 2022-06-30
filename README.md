@@ -26,8 +26,10 @@ It is built on top of async-await, tokio, and hyper.
 
 ## Status
 
-Xenon currently works as a drop-in replacement for Selenium Standalone in most cases,
+Xenon currently works as a drop-in replacement for Selenium Standalone 3.x in most cases,
 although 100% feature parity with Selenium is not a goal of Xenon.
+
+It may work with Selenium 4.x but has not been tested.
 
 Grid-like functionality is also supported (see "Running multiple nodes" below).
 

@@ -3,9 +3,8 @@ use crate::error::{XenonError, XenonResult};
 use crate::response::XenonResponse;
 use hyper::http::uri::{Authority, Scheme};
 use hyper::Uri;
-use serde::export::Formatter;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 pub struct NodeId(String);
