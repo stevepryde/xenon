@@ -64,6 +64,37 @@ You can even add multiple chromedriver configs as long as each one has a
 different `name` (this will match against the `browserName` setting of your
 desired capabilities arguments in your WebDriver client).
 
+#### Auto-downloading webdriver binaries
+
+Instead of providing `driver_path`, you can have Xenon download and cache the
+matching webdriver binary on startup:
+
+    ---
+    browsers:
+      - name: chrome
+        auto_download: true
+        driver_version: match-local   # default — probe the installed Chrome
+        max_sessions: 10
+      - name: firefox
+        auto_download: true
+        driver_version: latest        # download the latest geckodriver
+        max_sessions: 10
+    ports:
+      - "40001-41000"
+
+`driver_version` accepts:
+
+- `match-local` (default): detect the locally-installed browser and download a
+  driver matching that version.
+- `latest`: download the latest stable driver from upstream.
+- An exact version string, e.g. `"126.0.6478.126"` for Chrome/Edge, or
+  `"0.36.0"` for Firefox/geckodriver.
+
+Supported browsers for auto-download are `chrome`, `firefox`, `edge`, and
+`safari` (macOS-only; uses the system `safaridriver` and never downloads
+anything). Binaries are cached under
+`<system cache dir>/xenon-webdriver/drivers/`.
+
 ### Download and install Xenon
 
 You can install the binary directly from crates.io like this:

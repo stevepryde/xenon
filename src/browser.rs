@@ -1,6 +1,8 @@
 use crate::error::XenonError;
+use crate::manager::{DriverResolver, DriverVersion};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tracing::info;
 
 pub fn default_sessions_per_driver() -> u32 {
     1
@@ -17,14 +19,32 @@ pub struct BrowserConfig {
     os: Option<String>,
     /// Path to the webdriver binary (e.g. chromedriver, geckodriver).
     /// Populated explicitly in config, or filled in by `sanitize()` from
-    /// `default_webdriver()` for known browsers. May be `None` for browsers
-    /// received from a remote node (which we never spawn ourselves).
+    /// `default_webdriver()` for known browsers, or by `auto_download` after
+    /// resolution. May be `None` for browsers received from a remote node
+    /// (which we never spawn ourselves).
     driver_path: Option<PathBuf>,
     args: Option<Vec<String>>,
     #[serde(default = "default_sessions_per_driver")]
     sessions_per_driver: u32,
     #[serde(default = "default_max_sessions")]
     max_sessions: u32,
+
+    /// If `true`, Xenon will download and cache the matching webdriver binary
+    /// at startup, replacing `driver_path` with the cached path. Mutually
+    /// exclusive with an explicit `driver_path`.
+    #[serde(default)]
+    #[serde(skip_serializing)]
+    auto_download: bool,
+
+    /// Which driver version to use when `auto_download` is enabled. Accepts:
+    ///   - `match-local` (default): probe the installed browser and download
+    ///     a matching driver
+    ///   - `latest`: download the latest stable driver
+    ///   - an exact version string (e.g. `"126.0.6478.126"` for Chrome/Edge,
+    ///     or `"0.36.0"` for Firefox/geckodriver)
+    #[serde(default)]
+    #[serde(skip_serializing)]
+    driver_version: Option<DriverVersion>,
 }
 
 impl BrowserConfig {
@@ -33,8 +53,9 @@ impl BrowserConfig {
     }
 
     /// The driver path. Always `Some` for locally-configured browsers after
-    /// `sanitize()` has been called. May be `None` for browsers received from
-    /// a remote node, but those are never spawned locally.
+    /// `sanitize()` (and, when `auto_download` is set, after `resolve_driver`).
+    /// May be `None` for browsers received from a remote node, but those are
+    /// never spawned locally.
     pub fn driver_path(&self) -> Option<&Path> {
         self.driver_path.as_deref()
     }
@@ -49,6 +70,10 @@ impl BrowserConfig {
 
     pub fn max_sessions(&self) -> u32 {
         self.max_sessions
+    }
+
+    pub fn auto_download(&self) -> bool {
+        self.auto_download
     }
 
     /// Does this browser match the capabilities we are searching for?
@@ -95,20 +120,59 @@ impl BrowserConfig {
         true
     }
 
-    /// Does a preparation of a config for its usage
-    /// sets a default fields, make a validation
+    /// Validate config values and apply defaults.
+    ///
+    /// When `auto_download` is set, defer driver-path resolution to
+    /// [`Self::resolve_driver`] (which performs network I/O). Otherwise fall
+    /// back to the legacy `default_webdriver()` lookup for known browsers.
     pub fn sanitize(&mut self) -> Result<(), XenonError> {
+        if self.auto_download {
+            if self.driver_path.is_some() {
+                return Err(XenonError::ConfigUnexpectedBrowser(
+                    self.name.clone(),
+                    "auto_download cannot be combined with an explicit driver_path".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+
         if self.driver_path.is_none() {
             let default = default_webdriver(&self.name).ok_or_else(|| {
                 XenonError::ConfigUnexpectedBrowser(
                     self.name.clone(),
-                    "A default webdriver can't be found. You may need to use a custom path option via 'driver_path' setting".to_owned(),
+                    "A default webdriver can't be found. Either set a custom 'driver_path', or enable 'auto_download'".to_owned(),
                 )
             })?;
 
             self.driver_path = Some(default.to_owned());
         }
 
+        Ok(())
+    }
+
+    /// If `auto_download` is set, download (or cache-hit) the matching driver
+    /// and store its path in `driver_path`. No-op otherwise.
+    pub async fn resolve_driver(&mut self, resolver: &DriverResolver) -> Result<(), XenonError> {
+        if !self.auto_download {
+            return Ok(());
+        }
+        let version = self.driver_version.clone().unwrap_or_default();
+        info!(
+            "Resolving webdriver for browser '{}' (version: {:?})...",
+            self.name, version
+        );
+        let path = resolver.resolve(&self.name, &version).await.map_err(|e| {
+            XenonError::ConfigUnexpectedBrowser(
+                self.name.clone(),
+                format!("auto-download failed: {e}"),
+            )
+        })?;
+        info!(
+            "Webdriver for browser '{}' resolved to {}",
+            self.name,
+            path.display()
+        );
+        self.driver_path = Some(path);
         Ok(())
     }
 }

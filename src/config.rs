@@ -1,10 +1,11 @@
 use crate::browser::BrowserConfig;
 use crate::error::XenonError;
+use crate::manager::DriverResolver;
 use crate::nodes::RemoteNodeCreate;
 use crate::portmanager::ServicePort;
-use tracing::{error, warn};
 use serde::Deserialize;
 use std::path::Path;
+use tracing::{error, warn};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct XenonConfig {
@@ -36,6 +37,21 @@ impl XenonConfig {
 
     pub fn has_nodes(&self) -> bool {
         !self.nodes.is_empty()
+    }
+
+    /// `true` if any local browser has `auto_download` enabled.
+    pub fn has_auto_download(&self) -> bool {
+        self.browsers.iter().any(|b| b.auto_download())
+    }
+
+    /// Resolve any browsers configured with `auto_download: true` — downloading
+    /// and caching matching webdriver binaries and populating their
+    /// `driver_path`. No-op for browsers without `auto_download`.
+    pub async fn resolve_drivers(&mut self, resolver: &DriverResolver) -> Result<(), XenonError> {
+        for browser in &mut self.browsers {
+            browser.resolve_driver(resolver).await?;
+        }
+        Ok(())
     }
 
     /// Get the list of browsers and consume the config.

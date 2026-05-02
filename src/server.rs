@@ -20,6 +20,7 @@ use tracing::{debug, error, info, warn};
 use crate::browser::{Capabilities, W3CCapabilities};
 use crate::config::load_config;
 use crate::error::{XenonError, XenonResult};
+use crate::manager::DriverResolver;
 use crate::nodes::{NodeId, RemoteNode, RemoteServiceGroup};
 use crate::response::XenonResponse;
 use crate::service::ServiceGroup;
@@ -55,8 +56,12 @@ pub async fn start_server() -> XenonResult<()> {
 
     // Read config.
     let config_filename = opt.cfg.unwrap_or_else(|| PathBuf::from("xenon.yml"));
-    let config = load_config(&config_filename)?;
+    let mut config = load_config(&config_filename)?;
     debug!("Config loaded:\n{:#?}", config);
+    if config.has_auto_download() {
+        let resolver = DriverResolver::new();
+        config.resolve_drivers(&resolver).await?;
+    }
     let using_nodes = config.has_nodes();
     let app_state = AppState::new(XenonState::new(config)?);
 
@@ -147,9 +152,7 @@ async fn handle_create_session_route(
         .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
     info!("Request new session :: {:#?}", &w3c_capabilities);
     let capabilities: Capabilities = serde_json::from_value(w3c_capabilities.capabilities.clone())
-        .map_err(|e| {
-            XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
-        })?;
+        .map_err(|e| XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string())))?;
 
     match handle_create_session(&capabilities, &w3c_capabilities, &state).await {
         Ok(x) => Ok(x),
@@ -159,9 +162,9 @@ async fn handle_create_session_route(
             // error takes precedence.
             match handle_create_session_node(&capabilities, &w3c_capabilities, &state).await {
                 Ok(x) => Ok(x),
-                Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser)) => Err(
-                    XenonError::RespondWith(XenonResponse::NoSessionsAvailable),
-                ),
+                Err(XenonError::RespondWith(XenonResponse::NoMatchingBrowser)) => {
+                    Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable))
+                }
                 Err(e) => Err(e),
             }
         }
@@ -210,7 +213,11 @@ async fn forward_inner(
     let response = session.forward_request(req, &remaining_path).await?;
 
     if is_delete && response.status().is_success() {
-        info!("Session Delete {:?} :: port {}", xsession_id, session.port());
+        info!(
+            "Session Delete {:?} :: port {}",
+            xsession_id,
+            session.port()
+        );
         let port = session.port();
         let session_group = session.service_group().clone();
         // Drop the session lock before reaching for state write-locks below,
@@ -450,7 +457,11 @@ async fn process_session_timeout(
                 if let Some(mutex_session) = s.delete_session(&xsession_id) {
                     let session = mutex_session.lock().await;
 
-                    info!("Session Timeout {:?} :: port {}", xsession_id, session.port());
+                    info!(
+                        "Session Timeout {:?} :: port {}",
+                        xsession_id,
+                        session.port()
+                    );
                     if let Some(session_group) = session.service_group() {
                         if let Some(group) = groups.get_mut(session_group) {
                             group
@@ -509,7 +520,10 @@ async fn process_node_init(state: AppState) {
     while !nodes_remaining.is_empty() {
         let mut nodes_done = Vec::new();
         for node in nodes_remaining.values() {
-            debug!("Fetching config from downstream node '{}'...", node.display_name());
+            debug!(
+                "Fetching config from downstream node '{}'...",
+                node.display_name()
+            );
             let uri_out = match Uri::builder()
                 .scheme(node.scheme.clone())
                 .authority(node.authority.clone())
