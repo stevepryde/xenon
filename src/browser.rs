@@ -15,8 +15,10 @@ pub struct BrowserConfig {
     name: String,
     version: Option<String>,
     os: Option<String>,
-    /// driver_path always contains a path to a webdriver
-    /// It may be configured value or a default one.
+    /// Path to the webdriver binary (e.g. chromedriver, geckodriver).
+    /// Populated explicitly in config, or filled in by `sanitize()` from
+    /// `default_webdriver()` for known browsers. May be `None` for browsers
+    /// received from a remote node (which we never spawn ourselves).
     driver_path: Option<PathBuf>,
     args: Option<Vec<String>>,
     #[serde(default = "default_sessions_per_driver")]
@@ -27,16 +29,14 @@ pub struct BrowserConfig {
 
 impl BrowserConfig {
     pub fn name(&self) -> &str {
-        &self.name.as_str()
+        self.name.as_str()
     }
 
-    pub fn driver_path(&self) -> &Path {
-        match &self.driver_path {
-            Some(path) => path.as_path(),
-            _ => {
-                unreachable!();
-            }
-        }
+    /// The driver path. Always `Some` for locally-configured browsers after
+    /// `sanitize()` has been called. May be `None` for browsers received from
+    /// a remote node, but those are never spawned locally.
+    pub fn driver_path(&self) -> Option<&Path> {
+        self.driver_path.as_deref()
     }
 
     pub fn args(&self) -> &Option<Vec<String>> {

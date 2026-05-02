@@ -1,5 +1,6 @@
 use crate::response::XenonResponse;
-use hyper::{Body, Response};
+use axum::body::Body;
+use axum::response::{IntoResponse, Response};
 use std::path::PathBuf;
 
 pub type XenonResult<T> = Result<T, XenonError>;
@@ -8,6 +9,8 @@ pub type XenonResult<T> = Result<T, XenonError>;
 pub enum XenonError {
     #[error("Invalid port specified")]
     InvalidPort,
+    #[error("Invalid bind address: {0}")]
+    InvalidBindAddr(String),
     #[error("Server error: {0}")]
     ServerError(String),
     #[error("WebDriver request failed: {0}")]
@@ -21,9 +24,24 @@ pub enum XenonError {
     #[error("Error response returned to client")]
     RespondWith(XenonResponse),
     #[error("WebDriver response passed through to client")]
-    ResponsePassThrough(Response<Body>),
+    ResponsePassThrough(Box<Response<Body>>),
     #[error("IO Error: {0}")]
     IOError(#[from] std::io::Error),
     #[error("No sessions available for this service")]
     NoSessionsAvailable,
+    #[error("Internal error: WebDriver service vanished for port {0}")]
+    ServiceVanished(u16),
+}
+
+impl IntoResponse for XenonError {
+    fn into_response(self) -> Response {
+        match self {
+            XenonError::ResponsePassThrough(r) => *r,
+            XenonError::RespondWith(r) => r.into_response(),
+            other => {
+                tracing::error!("Internal error: {other:?}");
+                XenonResponse::InternalServerError(other.to_string()).into_response()
+            }
+        }
+    }
 }

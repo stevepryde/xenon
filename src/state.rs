@@ -3,10 +3,11 @@ use crate::error::XenonResult;
 use crate::nodes::{NodeId, RemoteNode};
 use crate::portmanager::PortManager;
 use crate::service::{ServiceGroup, ServiceGroupName};
-use crate::session::{Session, XenonSessionId};
+use crate::session::{ProxyClient, Session, XenonSessionId};
 use indexmap::map::IndexMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
 #[derive(Debug)]
@@ -97,5 +98,39 @@ impl XenonState {
             }
         }
         ids
+    }
+}
+
+/// Application state shared across axum handlers. Holds the lockable
+/// `XenonState` plus a single process-wide HTTP client used for all upstream
+/// chromedriver / geckodriver traffic and node-to-node proxying. The client
+/// is internally `Arc`-wrapped, so cloning is cheap; sharing one instance
+/// across sessions enables HTTP keep-alive reuse for repeated requests to
+/// the same upstream port.
+#[derive(Clone)]
+pub struct AppState {
+    pub xenon: Arc<RwLock<XenonState>>,
+    pub client: ProxyClient,
+}
+
+impl AppState {
+    pub fn new(xenon: XenonState) -> Self {
+        use hyper_util::client::legacy::Client;
+        use hyper_util::client::legacy::connect::HttpConnector;
+        use hyper_util::rt::TokioExecutor;
+
+        let mut connector = HttpConnector::new();
+        connector.set_nodelay(true);
+        connector.set_keepalive(Some(Duration::from_secs(60)));
+
+        let client = Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(usize::MAX)
+            .build(connector);
+
+        Self {
+            xenon: Arc::new(RwLock::new(xenon)),
+            client,
+        }
     }
 }

@@ -1,5 +1,5 @@
 use crate::server::start_server;
-use env_logger::Env;
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod browser;
 mod config;
@@ -14,10 +14,12 @@ mod state;
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_env(Env::default().default_filter_or("xenon=debug")).init();
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("xenon=debug"));
+    fmt().with_env_filter(filter).init();
 
     if let Err(e) = start_server().await {
-        println!("Xenon server stopped.\nERROR: {:?}", e);
+        eprintln!("Xenon server stopped.\nERROR: {e:?}");
         std::process::exit(1);
     }
 }

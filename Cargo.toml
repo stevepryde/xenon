@@ -2,7 +2,8 @@
 name = "xenon-webdriver"
 version = "0.5.0"
 authors = ["Steve Pryde <steve@stevepryde.com>"]
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 description = "Xenon is a WebDriver proxy similar to Selenium Server"
 homepage = "https://github.com/stevepryde/xenon"
@@ -12,16 +13,24 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync", "time", "process"] }
-log = "0.4"
-thiserror = "1.0"
-uuid = { version = "1.1", features = ["v4"] }
-hyper = { version = "0.14", features = ["full"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-serde = { version = "1.0", features = ["derive"] }
-bytes = "1.1"
-serde_yaml = "0.8"
-chrono = "0.4"
-indexmap = "1.9"
-env_logger = "0.9"
-structopt = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "signal", "net"] }
+axum = { version = "0.8" }
+hyper = { version = "1.5", features = ["http1"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+tower = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml = "0.9"
+bytes = "1.7"
+indexmap = "2"
+uuid = { version = "1.10", features = ["v4"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -22,16 +22,18 @@ Selenium server is a fantastic tool and performs its job very well, however
 it is written in Java and consumes a lot of system resources.
 
 By contrast, Xenon is written in Rust and is extremely fast and light-weight.
-It is built on top of async-await, tokio, and hyper.
+It is built on top of async-await, tokio, hyper 1, axum, and tracing.
 
 ## Status
 
-Xenon currently works as a drop-in replacement for Selenium Standalone 3.x in most cases,
-although 100% feature parity with Selenium is not a goal of Xenon.
+Xenon targets the W3C WebDriver protocol used by Selenium 4.x clients. Most
+non-BiDi tests written against Selenium Standalone or Grid will work
+unchanged. 100% feature parity with Selenium is not a goal of Xenon — for
+example, WebDriver BiDi (the WebSocket-based protocol used for streaming
+events) is not yet proxied. Selenium 3.x clients also work where their
+endpoints overlap with the W3C spec.
 
-It may work with Selenium 4.x but has not been tested.
-
-Grid-like functionality is also supported (see "Running multiple nodes" below).
+Grid-like functionality is supported (see "Running multiple nodes" below).
 
 Xenon is able to run the full [thirtyfour](https://github.com/stevepryde/thirtyfour)
 (Rust WebDriver client) test suite using 10 Chrome instances concurrently,
@@ -83,16 +85,22 @@ Now you can just start Xenon with no arguments. This assumes you have the
 
     ./xenon-webdriver
 
+By default Xenon binds to `127.0.0.1:4444`. Override with `--host` and
+`--port` (or `XENON_HOST` / `XENON_PORT` env vars). For grid setups where
+nodes need to be reachable from other machines, bind a node with
+`./xenon-webdriver --host 0.0.0.0`.
+
 You should see something like this:
 
-    [2020-05-23T13:55:34Z DEBUG xenon::server] Config loaded:
+    DEBUG xenon::server: Config loaded:
         XenonConfig {
             browsers: [
                 BrowserConfig {
                     name: "chrome",
                     version: None,
                     os: None,
-                    driver_path: "/usr/local/bin/chromedriver",
+                    driver_path: Some("/usr/local/bin/chromedriver"),
+                    args: None,
                     sessions_per_driver: 1,
                     max_sessions: 10,
                 },
@@ -100,8 +108,9 @@ You should see something like this:
             ports: [
                 "40001-41000",
             ],
+            nodes: [],
         }
-    [2020-05-23T13:55:34Z INFO  xenon::server] Server running at 127.0.0.1:4444
+    INFO xenon::server: Server running at 127.0.0.1:4444
 
 You can now run your selenium/WebDriver tests and point them at 127.0.0.1:4444
 just as you normally would. Xenon also optionally supports running at
@@ -166,6 +175,7 @@ https://stackoverflow.com/questions/12050021/how-to-make-xvfb-display-visible
 
 - Support for forwarding requests from one Xenon server to another, including across a network.
 - Docker and Docker Compose
+- WebDriver BiDi (WebSocket) proxying for Selenium 4 clients that use the streaming protocol
 
 ## LICENSE
 
