@@ -3,7 +3,7 @@ use crate::error::{XenonError, XenonResult};
 use crate::portmanager::{PortManager, ServicePort};
 use crate::response::XenonResponse;
 use crate::session::XenonSessionId;
-use log::*;
+use tracing::{debug, error};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tokio::process::{Child, Command};
@@ -98,7 +98,7 @@ impl ServiceGroup {
     }
 
     pub fn name(&self) -> &str {
-        &self.browser.name()
+        self.browser.name()
     }
 
     pub fn matches_capabilities(&self, capabilities: &Capabilities) -> bool {
@@ -150,22 +150,22 @@ impl ServiceGroup {
                         return Err(XenonError::RespondWith(XenonResponse::NoSessionsAvailable));
                     }
                 };
-                let service = WebDriverService::spawn(
-                    newport,
-                    &self.browser.driver_path(),
-                    self.browser.args(),
-                )
-                .await?;
+                let driver_path = self.browser.driver_path().ok_or_else(|| {
+                    XenonError::ConfigUnexpectedBrowser(
+                        self.browser.name().to_string(),
+                        "driver_path is missing (config was not sanitized)".to_string(),
+                    )
+                })?;
+                let service =
+                    WebDriverService::spawn(newport, driver_path, self.browser.args()).await?;
                 self.services.insert(newport, service);
                 newport
             }
         };
 
-        // Safe to unwrap here because we literally just either looked it up or inserted it.
-        Ok(self
-            .services
+        self.services
             .get_mut(&next_port)
-            .unwrap_or_else(|| panic!("No service for port '{}'", next_port)))
+            .ok_or(XenonError::ServiceVanished(next_port))
     }
 
     pub async fn delete_session(

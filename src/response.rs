@@ -1,4 +1,6 @@
-use hyper::{Body, Response, StatusCode};
+use axum::body::Body;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -26,28 +28,25 @@ impl XenonResponse {
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
+}
 
-    pub fn into_response(self) -> Response<Body> {
-        Response::builder()
-            .status(self.status())
-            .body(self.into())
-            .unwrap_or_else(|_| {
-                Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::from("Xenon failed to serialize an error"))
-                    .unwrap()
-            })
+impl IntoResponse for XenonResponse {
+    fn into_response(self) -> Response {
+        let status = self.status();
+        let body: Body = self.into();
+        (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
     }
 }
 
-impl Into<Body> for XenonResponse {
-    fn into(self) -> Body {
+impl From<XenonResponse> for Body {
+    fn from(resp: XenonResponse) -> Self {
         // Construct WebDriver-compatible JSON output.
-        let (error_code, message) = match &self {
-            XenonResponse::EndpointNotFound(x) => ("unknown method", x.clone()),
-            XenonResponse::MethodNotFound(x) => ("unknown method", x.clone()),
-            XenonResponse::SessionNotFound(x) => ("invalid session id", x.clone()),
-            XenonResponse::ErrorCreatingSession(x) => ("session not created", x.clone()),
+        let status = resp.status().as_u16();
+        let (error_code, message) = match resp {
+            XenonResponse::EndpointNotFound(x) => ("unknown method", x),
+            XenonResponse::MethodNotFound(x) => ("unknown method", x),
+            XenonResponse::SessionNotFound(x) => ("invalid session id", x),
+            XenonResponse::ErrorCreatingSession(x) => ("session not created", x),
             XenonResponse::NoMatchingBrowser => (
                 "session not created",
                 String::from("No browser was found to match the desired capabilities"),
@@ -56,12 +55,12 @@ impl Into<Body> for XenonResponse {
                 "session not created",
                 String::from("Session limit reached. No available sessions"),
             ),
-            XenonResponse::InternalServerError(x) => ("unknown error", x.clone()),
-            XenonResponse::ErrorCreatingNode(x) => ("error creating node", x.clone()),
+            XenonResponse::InternalServerError(x) => ("unknown error", x),
+            XenonResponse::ErrorCreatingNode(x) => ("error creating node", x),
         };
 
         let json_body = serde_json::json!({
-            "status": self.status().as_u16(),
+            "status": status,
             "state": error_code,
             "value": {
                 "message": message,
@@ -71,7 +70,7 @@ impl Into<Body> for XenonResponse {
 
         Body::from(
             serde_json::to_string(&json_body)
-                .unwrap_or_else(|e| format!("JSON error message conversion failed: {}", e)),
+                .unwrap_or_else(|e| format!("JSON error message conversion failed: {e}")),
         )
     }
 }

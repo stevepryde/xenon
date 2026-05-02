@@ -2,7 +2,7 @@ use crate::browser::BrowserConfig;
 use crate::error::XenonError;
 use crate::nodes::RemoteNodeCreate;
 use crate::portmanager::ServicePort;
-use log::*;
+use tracing::{error, warn};
 use serde::Deserialize;
 use std::path::Path;
 

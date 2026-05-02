@@ -1,13 +1,18 @@
 use crate::error::{XenonError, XenonResult};
 use crate::portmanager::ServicePort;
 use crate::response::XenonResponse;
-use bytes::Bytes;
-use hyper::client::HttpConnector;
-use hyper::http::uri::{Authority, Scheme};
-use hyper::{Body, Client, Request, Response};
-use log::*;
+use axum::body::Body;
+use axum::http::uri::{Authority, Scheme};
+use axum::http::{Method, Request, Response};
+use http_body_util::BodyExt;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
 use serde::{Deserialize, Serialize};
+use std::fmt::{self, Display, Formatter};
 use tokio::time::{Duration, Instant};
+use tracing::debug;
+
+pub type ProxyClient = Client<HttpConnector, Body>;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct XenonSessionId(String);
@@ -33,9 +38,9 @@ impl XenonSessionId {
     }
 }
 
-impl ToString for XenonSessionId {
-    fn to_string(&self) -> String {
-        self.0.clone()
+impl Display for XenonSessionId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -56,27 +61,27 @@ struct ConnectionResp {
 
 /// A Session represents one browser session with one webdriver.
 /// Note that a single webdriver such as chromedriver can have multiple
-/// sessions and parallel requests, so the Http client needs to go here
-/// in the session and not on the service. This allows multiple Xenon clients
-/// to make requests to the same webdriver concurrently if needed.
+/// sessions and parallel requests, so the Http client is shared at the
+/// process level (held in `AppState`) and reused here. The shared client
+/// pools connections per-authority, so back-to-back requests to the same
+/// chromedriver port reuse keep-alive sockets.
 #[derive(Debug)]
 pub struct Session {
     /// NOTE: This is the internal session id for the target WebDriver session itself.
-    /// It starts out as None since it is just a placeholder for a session.
-    /// This will be updated once the session actually connects.
     session_id: String,
     /// The service group this session belongs to, or None for a remote session.
     service_group: Option<String>,
     scheme: Scheme,
     authority: Authority,
     port: ServicePort,
-    client: Client<HttpConnector, Body>,
-    // Timestamp of last request, for handling timeouts.
+    client: ProxyClient,
+    /// Timestamp of last request, for handling timeouts.
     last_timestamp: Instant,
 }
 
 impl Session {
     pub async fn create(
+        client: ProxyClient,
         scheme: Scheme,
         authority: Authority,
         service_group: Option<String>,
@@ -84,77 +89,69 @@ impl Session {
         desired_capabilities: &serde_json::Value,
         xsession_id: XenonSessionId,
     ) -> XenonResult<(Self, Response<Body>)> {
-        let client = Client::new();
-
         // Wait for port to be ready.
         let port = match authority.port_u16() {
             Some(p) => p,
             None => {
                 return Err(XenonError::RespondWith(
                     XenonResponse::ErrorCreatingSession("Port not recognised".to_string()),
-                ))
+                ));
             }
         };
-        let mut count = 0;
-        loop {
-            let status_req = Session::build_request(
-                hyper::Method::GET,
-                &scheme,
-                &authority,
-                "/status",
-                Body::empty(),
-            )?;
+
+        for _ in 0..30 {
+            let status_req =
+                Session::build_request(Method::GET, &scheme, &authority, "/status", Body::empty())?;
             if let Ok(response) = client.request(status_req).await {
                 if response.status().is_success() {
                     break;
                 }
             }
-
-            count += 1;
-            if count > 30 {
-                return Err(XenonError::RespondWith(
-                    XenonResponse::ErrorCreatingSession(
-                        "Timed out waiting for WebDriver".to_string(),
-                    ),
-                ));
-            }
-
-            debug!(
-                "WebDriver not available on port {}. Will retry in 1 second...",
-                port
-            );
-            tokio::time::sleep(Duration::new(1, 0)).await;
+            debug!("WebDriver not available on port {port}. Will retry in 1 second...");
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
-        // Send capabilities to driver verbatim.
-        let caps = serde_json::json!({
-            "capabilities": capabilities,
-            "desiredCapabilities": desired_capabilities
-        });
+        // Send capabilities to driver. Selenium 4 / W3C clients only send the
+        // `capabilities` object — only forward `desiredCapabilities` if the
+        // client actually provided it (legacy Selenium 3 / JSON Wire compat).
+        let caps = if desired_capabilities.is_null() {
+            serde_json::json!({ "capabilities": capabilities })
+        } else {
+            serde_json::json!({
+                "capabilities": capabilities,
+                "desiredCapabilities": desired_capabilities,
+            })
+        };
         let body_str = serde_json::to_string(&caps).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
         })?;
         let req_out = Session::build_request(
-            hyper::Method::POST,
+            Method::POST,
             &scheme,
             &authority,
             "/session",
             Body::from(body_str),
         )?;
 
-        let mut response = client
+        let response = client
             .request(req_out)
             .await
             .map_err(|e| XenonError::RequestError(e.to_string()))?;
-        if !response.status().is_success() {
-            return Err(XenonError::ResponsePassThrough(response));
+
+        let (parts, body) = response.into_parts();
+        if !parts.status.is_success() {
+            // Pass the upstream response straight back to the client, body and all.
+            let response = Response::from_parts(parts, Body::new(body));
+            return Err(XenonError::ResponsePassThrough(Box::new(response)));
         }
 
-        let body_bytes: Bytes = hyper::body::to_bytes(response.body_mut())
+        let body_bytes = body
+            .collect()
             .await
             .map_err(|e| {
                 XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
-            })?;
+            })?
+            .to_bytes();
 
         // Deserialize the response into something WebDriver clients will understand.
         let mut resp: ConnectionResp = serde_json::from_slice(&body_bytes).map_err(|e| {
@@ -162,21 +159,22 @@ impl Session {
         })?;
 
         let session_id = if resp.session_id.is_empty() {
-            resp.value.session_id
+            std::mem::take(&mut resp.value.session_id)
         } else {
-            resp.session_id
+            std::mem::take(&mut resp.session_id)
         };
 
         // Switch out the session ids in the response with the one from Xenon.
-        resp.session_id = xsession_id.to_string();
-        resp.value.session_id = xsession_id.to_string();
+        let xs = xsession_id.to_string();
+        resp.session_id = xs.clone();
+        resp.value.session_id = xs;
 
         let bytes_out = serde_json::to_vec(&resp).map_err(|e| {
             XenonError::RespondWith(XenonResponse::ErrorCreatingSession(e.to_string()))
         })?;
 
         let resp_out = Response::builder()
-            .status(response.status())
+            .status(parts.status)
             .header("Content-Type", "application/json")
             .body(Body::from(bytes_out))
             .map_err(|e| {
@@ -210,25 +208,24 @@ impl Session {
     }
 
     pub fn build_request(
-        method: hyper::Method,
+        method: Method,
         scheme: &Scheme,
         authority: &Authority,
         path: &str,
         body: Body,
     ) -> XenonResult<Request<Body>> {
-        let uri_out = hyper::Uri::builder()
+        let uri_out = axum::http::Uri::builder()
             .scheme(scheme.clone())
             .authority(authority.clone())
             .path_and_query(path)
             .build()
             .map_err(|e| XenonError::RequestError(e.to_string()))?;
 
-        let req_out = Request::builder()
+        Request::builder()
             .method(method)
             .uri(uri_out)
             .body(body)
-            .map_err(|e| XenonError::RequestError(e.to_string()))?;
-        Ok(req_out)
+            .map_err(|e| XenonError::RequestError(e.to_string()))
     }
 
     pub async fn forward_request(
@@ -238,7 +235,8 @@ impl Session {
     ) -> XenonResult<Response<Body>> {
         self.last_timestamp = Instant::now();
 
-        // Substitute the uri and send the request again...
+        // Substitute the uri and send the request again. Body is moved through
+        // unchanged — hyper-util streams it upstream without buffering.
         let mut path_and_query = if endpoint.is_empty() {
             format!("/session/{}", self.session_id)
         } else {
@@ -246,8 +244,8 @@ impl Session {
         };
 
         if let Some(q) = req.uri().query() {
-            path_and_query += "?";
-            path_and_query += q;
+            path_and_query.push('?');
+            path_and_query.push_str(q);
         }
         let req_out = Session::build_request(
             req.method().clone(),
@@ -256,9 +254,14 @@ impl Session {
             &path_and_query,
             req.into_body(),
         )?;
-        self.client
+
+        let upstream = self
+            .client
             .request(req_out)
             .await
-            .map_err(|e| XenonError::RequestError(e.to_string()))
+            .map_err(|e| XenonError::RequestError(e.to_string()))?;
+
+        let (parts, body) = upstream.into_parts();
+        Ok(Response::from_parts(parts, Body::new(body)))
     }
 }

@@ -1,8 +1,8 @@
 use crate::browser::BrowserConfig;
 use crate::error::{XenonError, XenonResult};
 use crate::response::XenonResponse;
-use hyper::http::uri::{Authority, Scheme};
-use hyper::Uri;
+use axum::http::Uri;
+use axum::http::uri::{Authority, Scheme};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
