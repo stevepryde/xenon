@@ -1,9 +1,22 @@
 browsers:
+  # Use auto_download to fetch the matching webdriver binary on startup.
+  # driver_version accepts:
+  #   - match-local (default): probe the installed browser and download a matching driver
+  #   - latest: download the latest stable driver
+  #   - an exact version (e.g. "126.0.6478.126" for Chrome/Edge, "0.36.0" for Firefox)
   - name: chrome
-    driver_path: /usr/local/bin/chromedriver
+    auto_download: true
+    driver_version: match-local
     max_sessions: 10
   - name: firefox
-    driver_path: /usr/local/bin/geckodriver
+    auto_download: true
+    driver_version: latest
     max_sessions: 10
+
+  # Or supply a driver_path explicitly, as before:
+  # - name: edge
+  #   driver_path: /usr/local/bin/msedgedriver
+  #   max_sessions: 5
+
 ports:
   - "40001-41000"

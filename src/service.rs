@@ -3,10 +3,10 @@ use crate::error::{XenonError, XenonResult};
 use crate::portmanager::{PortManager, ServicePort};
 use crate::response::XenonResponse;
 use crate::session::XenonSessionId;
-use tracing::{debug, error};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tokio::process::{Child, Command};
+use tracing::{debug, error};
 
 /// A WebDriverService represents one instance of a webdriver binary such
 /// as chromedriver, to which one or more sessions can attach.
